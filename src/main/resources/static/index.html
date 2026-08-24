@@ -1,0 +1,580 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>DataForge — 智能数据生成平台</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: system-ui, "Microsoft YaHei", sans-serif; background: #f3f4f6; color: #1f2937; }
+  header { background: #111827; color: #fff; padding: 12px 24px; display: flex; align-items: center; gap: 14px; }
+  header h1 { font-size: 17px; font-weight: 600; }
+  header .db { background: #1f2937; border: 1px solid #374151; border-radius: 6px; padding: 4px 12px; font-size: 13px; color: #93c5fd; }
+  button { background: #2563eb; color: #fff; border: none; border-radius: 6px; padding: 8px 16px; cursor: pointer; font-size: 14px; }
+  button:hover { background: #1d4ed8; }
+  button:disabled { background: #9ca3af; cursor: not-allowed; }
+  button.gray { background: #6b7280; }
+  button.danger { background: #dc2626; }
+
+  .steps { background: #fff; border-bottom: 1px solid #e5e7eb; padding: 10px 24px; display: flex; gap: 8px; overflow-x: auto; }
+  .steps .step { display: flex; align-items: center; gap: 6px; padding: 6px 14px; border-radius: 8px; font-size: 13px; color: #6b7280; cursor: pointer; white-space: nowrap; }
+  .steps .step .num { width: 20px; height: 20px; border-radius: 50%; background: #e5e7eb; color: #6b7280; display: inline-flex; align-items: center; justify-content: center; font-size: 12px; }
+  .steps .step.active { background: #eff6ff; color: #1d4ed8; font-weight: 600; }
+  .steps .step.active .num { background: #2563eb; color: #fff; }
+
+  main { max-width: 1040px; margin: 18px auto; padding: 0 16px; }
+  .view { display: none; }
+  .view.active { display: block; }
+  .card { background: #fff; border-radius: 10px; padding: 20px; box-shadow: 0 1px 3px rgba(0,0,0,.08); margin-bottom: 14px; }
+  .card h2 { font-size: 15px; margin-bottom: 14px; }
+  .row { display: flex; gap: 10px; align-items: center; }
+  label { font-size: 12px; color: #6b7280; display: block; margin: 8px 0 3px; }
+  input, select { padding: 7px 10px; border: 1px solid #d1d5db; border-radius: 6px; font-size: 13px; }
+  input[type=text], input[type=password], input[type=number] { width: 100%; }
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  th, td { text-align: left; padding: 7px 10px; border-bottom: 1px solid #e5e7eb; }
+  th { color: #6b7280; font-weight: 500; background: #f9fafb; }
+  td input[type=number] { width: 72px; text-align: right; }
+  .ok { color: #059669; font-weight: 600; }
+  .err { color: #dc2626; }
+  .warn { color: #d97706; }
+  .muted { color: #9ca3af; font-size: 12px; }
+  .conf-low { color: #d97706; font-weight: 600; }
+  .hint { margin-top: 8px; font-size: 12px; min-height: 16px; }
+  .nav-btns { display: flex; justify-content: space-between; margin-top: 14px; }
+
+  /* 已选表 chips */
+  .selected-tables { display: flex; flex-wrap: wrap; gap: 10px; margin: 12px 0; }
+  .sel-table { display: flex; align-items: center; gap: 8px; background: #eff6ff; border: 1px solid #bfdbfe; border-radius: 8px; padding: 6px 12px; }
+  .sel-table .del { cursor: pointer; color: #dc2626; font-weight: bold; }
+
+  /* 提示词文本规则 */
+  .rule-doc h3 { font-size: 13px; color: #2563eb; margin: 12px 0 6px; }
+  .rule-doc .rule-line { padding: 5px 0; font-size: 13px; line-height: 1.6; }
+  .rule-doc .rule-line::before { content: '· '; color: #6b7280; }
+  .rule-doc .conf { color: #9ca3af; font-size: 11px; }
+
+  /* 两栏 */
+  .two-col { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+  @media (max-width: 800px) { .two-col { grid-template-columns: 1fr; } }
+  .chat { display: flex; flex-direction: column; height: 460px; }
+  .chat .msgs { flex: 1; overflow-y: auto; background: #f9fafb; border-radius: 8px; padding: 10px; }
+  .chat .msg { margin-bottom: 10px; padding: 8px 12px; border-radius: 8px; font-size: 13px; }
+  .chat .msg.user { background: #eff6ff; color: #1e40af; }
+  .chat .msg.ai { background: #f0fdf4; color: #166534; }
+  .chat .input { display: flex; gap: 8px; margin-top: 10px; }
+
+  .modal-overlay { display: none; position: fixed; inset: 0; background: rgba(0,0,0,.5); z-index: 50; align-items: center; justify-content: center; }
+  .modal-overlay.show { display: flex; }
+  .modal { background: #fff; border-radius: 12px; width: 440px; padding: 22px; }
+  .modal h3 { font-size: 16px; margin-bottom: 12px; }
+  .table-row { padding: 10px 14px; border: 1px solid #e5e7eb; border-radius: 8px; margin-bottom: 6px; cursor: pointer; font-size: 14px; }
+  .table-row:hover { background: #f9fafb; }
+  .table-row.selected { background: #eff6ff; border-color: #2563eb; color: #1d4ed8; }
+  .actions { display: flex; gap: 8px; justify-content: flex-end; margin-top: 16px; }
+  pre { background: #111827; color: #a7f3d0; border-radius: 8px; padding: 12px; font-size: 12px; overflow: auto; max-height: 300px; white-space: pre-wrap; word-break: break-all; }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>DataForge</h1>
+  <span class="db" id="dbBadge">未配置</span>
+</header>
+
+<div class="steps" id="steps">
+  <div class="step active" data-view="1"><span class="num">1</span>连接配置</div>
+  <div class="step" data-view="2"><span class="num">2</span>选择表</div>
+  <div class="step" data-view="3"><span class="num">3</span>分析规则</div>
+  <div class="step" data-view="4"><span class="num">4</span>生成预览</div>
+  <div class="step" data-view="5"><span class="num">5</span>评分发布</div>
+</div>
+
+<main>
+  <!-- ① 连接配置（首屏直接展示） -->
+  <div class="view active" id="view1">
+    <div class="card">
+      <h2>数据库连接配置 <span class="muted">（填主机/账号 → 测试连接 → 下拉选库）</span></h2>
+      <div class="row">
+        <div style="flex:2"><label>主机</label><input id="dbHost" placeholder="localhost"></div>
+        <div style="flex:1"><label>端口</label><input id="dbPort" placeholder="3306"></div>
+        <div style="flex:2"><label>数据库名 <span class="muted">（测试连接后选择）</span></label>
+          <select id="dbSchema" disabled><option value="">— 测试连接后选择 —</option></select></div>
+      </div>
+      <div class="row">
+        <div style="flex:1"><label>用户名</label><input id="dbUser" placeholder="root"></div>
+        <div style="flex:1"><label>密码</label><input id="dbPassword" type="password"></div>
+      </div>
+      <div class="row">
+        <div style="flex:3"><label>项目路径（可选）</label><input id="projectPath" placeholder="如 D:/claudecode/shop"></div>
+        <div style="flex:1"><label>Skill</label><select id="skillSel"><option>通用</option><option>电商</option></select></div>
+      </div>
+      <div class="row" style="margin-top:14px">
+        <button id="btnTestCfg">测试连接</button>
+        <button id="btnNext2">下一步：选择表 →</button>
+      </div>
+      <div class="hint" id="cfgMsg"></div>
+    </div>
+  </div>
+
+  <!-- ② 解析 → 弹窗选表 -->
+  <div class="view" id="view2">
+    <div class="card">
+      <h2>解析表结构</h2>
+      <button id="btnParse">解析表结构</button>
+      <div class="hint" id="parseMsg"></div>
+    </div>
+    <div class="card">
+      <h2>已选表 <span class="muted">（表格内修改行数）</span></h2>
+      <table>
+        <thead><tr><th>表名</th><th>列数</th><th>推荐</th><th>生成行数</th><th style="width:64px"></th></tr></thead>
+        <tbody id="selectedTableBody"></tbody>
+      </table>
+      <div class="row" style="margin-top:10px">
+        <button id="btnSelect" class="gray">选择表</button>
+        <button id="btnReselect" class="gray" style="display:none">重新选择</button>
+      </div>
+      <div class="nav-btns"><button class="gray" onclick="showView(1)">上一步</button><button id="btnToGen" disabled>下一步 →</button></div>
+    </div>
+  </div>
+
+  <!-- ③ 分析（三段式提示词文本）+ LLM 对话改规则 -->
+  <div class="view" id="view3">
+    <div class="card">
+      <h2>分析（只分析你选择的表）</h2>
+      <div class="row">
+        <button id="btnAnalyze">开始分析（LLM 提炼规则）</button>
+        <button id="btnLoadRules" class="gray" style="display:none">加载已保存规则</button>
+      </div>
+      <span id="savedBadge" class="ok" style="margin-left:2px;font-size:12px"></span>
+      <div class="hint" id="analyzeMsg"></div>
+    </div>
+    <div class="two-col">
+      <div class="card">
+        <div class="rule-doc">
+          <h2 style="margin-top:0">规则（提示词文本）</h2>
+          <h3>前置约束（生成约束）</h3><div id="genDoc"></div>
+          <h3>后置修正规则（校验/修正）</h3><div id="corrDoc"></div>
+          <h3>行构建器 <span class="muted">（只读展示）</span></h3>
+          <div id="builderDoc" class="muted"></div>
+          <div id="builderEdit" style="margin-top:8px"></div>
+          <h3>生成计划 <span class="muted">（每表列模式，分析产出）</span></h3>
+          <div id="planDoc" class="muted"></div>
+          <div class="row" style="margin-top:10px">
+            <span id="diffInfo" class="muted"></span>
+            <button id="btnRestore" class="gray" style="display:none">恢复为 agent 建议</button>
+            <button id="btnSaveBuilder" class="gray" style="display:none">保存构建器</button>
+          </div>
+        </div>
+        <div class="nav-btns"><button class="gray" onclick="showView(2)">上一步</button><button id="btnToGen3">下一步 →</button></div>
+      </div>
+      <div class="card">
+        <h2>用 LLM 修改规则</h2>
+        <div class="chat">
+          <div class="msgs" id="chatMsgs"></div>
+          <div class="input">
+            <input id="chatInput" placeholder="输入指令，如：商品名加品牌前缀 / 删掉状态联动" style="flex:1">
+            <button id="btnSend">发送</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ④ 生成 + 校验 + 预览 -->
+  <div class="view" id="view4">
+    <div class="card">
+      <h2>生成</h2>
+      <button id="btnGen4">开始生成</button>
+      <div class="hint" id="genMsg"></div>
+      <table>
+        <thead><tr><th>表名</th><th>目标</th><th>实际</th><th>校验</th></tr></thead>
+        <tbody id="genResult"></tbody>
+      </table>
+      <div class="nav-btns"><button class="gray" onclick="showView(3)">上一步</button><button id="btnToScore">下一步 →</button></div>
+    </div>
+    <div class="card">
+      <h2>数据预览 <span class="muted">（前 50 行，血缘标注）</span></h2>
+      <div class="row" style="margin-bottom:10px">
+        <select id="previewTable" style="min-width:200px"></select>
+        <button id="btnPreview" class="gray">刷新预览</button>
+      </div>
+      <table id="previewWrap" style="display:none"><thead id="previewHead"></thead><tbody id="previewBody"></tbody></table>
+      <div class="hint" id="previewMsg"></div>
+    </div>
+  </div>
+
+  <!-- ⑤ 评分 + 发布 -->
+  <div class="view" id="view5">
+    <div class="card">
+      <h2>软评分</h2>
+      <button id="btnScore">开始评分</button>
+      <div class="hint" id="scoreMsg"></div>
+      <table><thead><tr><th>表名</th><th>评分</th><th>主要差异</th></tr></thead><tbody id="scoreTable"></tbody></table>
+    </div>
+    <div class="card">
+      <h2>发布 <span class="muted">（仅追加 APPEND / 不动 KEEP，目标库不清空）</span></h2>
+      <table><thead><tr><th>表名</th><th>行数</th><th>策略</th></tr></thead><tbody id="publishTable"></tbody></table>
+      <div class="row" style="margin-top:12px">
+        <button id="btnExportSql" class="gray">导出 SQL 文件</button>
+        <button id="btnPublish" class="danger">确认发布</button>
+      </div>
+      <div class="hint" id="publishMsg"></div>
+    </div>
+    <div class="card">
+      <h2>历史记录</h2>
+      <button id="btnHistory" class="gray">刷新</button>
+      <pre id="historyList"></pre>
+    </div>
+  </div>
+</main>
+
+<!-- 选表弹窗 -->
+<div class="modal-overlay" id="selectOverlay">
+  <div class="modal">
+    <h3>选择要生成的表（点击整行选中/取消）</h3>
+    <div id="tableSelectList" style="max-height:320px;overflow:auto"></div>
+    <div class="actions"><button class="gray" id="btnCancelSel">取消</button><button id="btnConfirmSel">确认选择</button></div>
+  </div>
+</div>
+
+<script>
+let db = {}, tablePlans = [], selected = {}, genRules = [], corrRules = [], builders = [],
+    originalRules = [], genResult = null, publishMeta = {}, maxStep = 1, analyzedTables = [];
+
+const $ = id => document.getElementById(id);
+const api = (path, body) => fetch(path, { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body) }).then(r => r.json());
+
+function showView(n) {
+  document.querySelectorAll('.view').forEach(v => v.classList.remove('active'));
+  $('view'+n).classList.add('active');
+  document.querySelectorAll('.steps .step').forEach(s => s.classList.toggle('active', +s.dataset.view === n));
+}
+document.querySelectorAll('.steps .step').forEach(s => s.onclick = () => { if (+s.dataset.view <= maxStep) showView(+s.dataset.view); });
+function refreshBadge() { $('dbBadge').textContent = db.dbSchema ? '数据库：' + db.dbSchema : '未配置'; }
+function readForm() { return { dbHost:$('dbHost').value, dbPort:$('dbPort').value, dbUser:$('dbUser').value, dbPassword:$('dbPassword').value, dbSchema:$('dbSchema').value, projectPath:$('projectPath').value, skill:$('skillSel').value }; }
+/* 防重复：执行期间按钮禁用，防止连续点击（尤其生成会重建 staging 工作区） */
+async function busy(btn, label, fn) {
+  if (btn.disabled) return;
+  btn.disabled = true;
+  const orig = btn.textContent;
+  btn.textContent = label;
+  try { await fn(); } finally { btn.disabled = false; btn.textContent = orig; }
+}
+
+/* ① 配置（首屏） */
+$('btnTestCfg').onclick = async () => {
+  $('btnTestCfg').disabled = true; $('btnTestCfg').textContent = '测试中...';
+  try {
+    const r = await api('/api/test-connection', readForm());
+    if (!r.ok) { $('cfgMsg').innerHTML = '<span class="err">✗ '+r.message+'</span>'; return; }
+    // 测试连接成功 → 拉取数据库列表 → 填充库名下拉框
+    const list = await api('/api/list-databases', readForm());
+    if (!list.ok) { $('cfgMsg').innerHTML = '<span class="err">✗ 连接成功但列库失败：'+list.message+'</span>'; return; }
+    const sel = $('dbSchema');
+    const prev = db.dbSchema || '';
+    sel.innerHTML = '';
+    (list.databases || []).forEach(name => {
+      const opt = document.createElement('option');
+      opt.value = name; opt.textContent = name;
+      if (name === prev) opt.selected = true;
+      sel.appendChild(opt);
+    });
+    if (sel.options.length && !prev) sel.selectedIndex = 0;
+    sel.disabled = false;
+    $('cfgMsg').innerHTML = '<span class="ok">✓ 连接成功，已列出 '+list.databases.length+' 个数据库</span>';
+  } finally {
+    $('btnTestCfg').disabled = false; $('btnTestCfg').textContent = '测试连接';
+  }
+};
+$('btnNext2').onclick = () => { db = readForm(); refreshBadge(); showView(2); maxStep = 2; };
+
+/* ② 解析 + 弹窗选表 */
+$('btnParse').onclick = async () => {
+  $('btnParse').disabled = true; $('parseMsg').textContent = '解析中...';
+  try {
+    const r = await api('/api/parse', db);
+    if (r.error) { $('parseMsg').innerHTML = '<span class="err">'+r.error+'</span>'; return; }
+    tablePlans = r.tables || [];
+    // 确定性占位推荐（列数），LLM 推荐行数异步加载——不阻塞选表弹窗
+    tablePlans.forEach(t => { t._ph = Math.max(10, t.columns); t.recommend = t._ph; });
+    openSelect();
+    $('parseMsg').textContent = '共 '+tablePlans.length+' 张表（推荐行数计算中...）';
+    api('/api/recommend-rows', db).then(rec => {
+      const recMap = (rec.recommend) || {};
+      tablePlans.forEach(t => { if (recMap[t.name] > 0) t.recommend = recMap[t.name]; });
+      refreshRecommend();
+      $('parseMsg').textContent = '共 '+tablePlans.length+' 张表，已打开选表弹窗';
+    }).catch(() => { $('parseMsg').textContent = '共 '+tablePlans.length+' 张表（推荐行数加载失败，已用默认值）'; });
+  } finally { $('btnParse').disabled = false; }
+};
+/** 异步推荐行数返回后刷新显示（输入框仍是占位值才同步，不覆盖用户手输） */
+function refreshRecommend() {
+  document.querySelectorAll('#tableSelectList .table-row .muted').forEach(el => {
+    const tp = tablePlans.find(p => p.name === el.closest('.table-row').dataset.table);
+    if (tp) el.textContent = tp.columns + ' 列 · 推荐 ' + tp.recommend;
+  });
+  document.querySelectorAll('#selectedTableBody tr').forEach(row => {
+    const inp = row.querySelector('input[type=number]');
+    const tp = tablePlans.find(p => p.name === (inp ? inp.dataset.table : ''));
+    if (!tp) return;
+    const rec = row.querySelector('[data-rec]');
+    if (rec) rec.textContent = tp.recommend;
+    if (inp && String(inp.value) === String(tp._ph)) inp.value = tp.recommend;
+  });
+}
+function openSelect() {
+  $('tableSelectList').innerHTML = tablePlans.map(t =>
+    '<div class="table-row'+(selected[t.name]?' selected':'')+'" data-table="'+t.name+'" onclick="toggleSelect(this)">'+t.name+
+    '<span class="muted" style="margin-left:8px">'+t.columns+' 列 · 推荐 '+t.recommend+'</span></div>').join('');
+  $('selectOverlay').classList.add('show');
+}
+function toggleSelect(el) {
+  const t = el.dataset.table;
+  selected[t] = !selected[t];
+  el.classList.toggle('selected', selected[t]);
+}
+$('btnCancelSel').onclick = () => $('selectOverlay').classList.remove('show');
+$('btnConfirmSel').onclick = () => {
+  $('selectOverlay').classList.remove('show');
+  renderSelected();
+};
+$('btnSelect').onclick = openSelect;
+$('btnReselect').onclick = openSelect;
+function renderSelected() {
+  const names = Object.keys(selected).filter(t => selected[t]);
+  const body = $('selectedTableBody');
+  body.innerHTML = names.length
+    ? names.map(t => {
+        const tp = tablePlans.find(p => p.name === t);
+        const cols = tp ? tp.columns : 0;
+        const rec = tp ? tp.recommend : 10;
+        return '<tr><td>'+t+'</td><td class="muted">'+cols+'</td>'+
+          '<td class="muted" data-rec="'+t+'">'+rec+'</td>'+
+          '<td><input type="number" min="0" data-table="'+t+'" value="'+rec+'"></td>'+
+          '<td><button class="gray" style="padding:3px 10px" onclick="removeSel(\''+t+'\')">移除</button></td></tr>';
+      }).join('')
+    : '<tr><td colspan="5" class="muted" style="text-align:center;padding:16px">尚未选择表，点"选择表"勾选要生成的表</td></tr>';
+  $('btnReselect').style.display = names.length ? '' : 'none';
+  $('btnToGen').disabled = !names.length;
+}
+function removeSel(t) { selected[t] = false; renderSelected(); }
+$('btnToGen').onclick = () => { showView(3); maxStep = 3; };
+
+/* ③ 分析（三段式提示词文本）+ 对话 */
+$('btnAnalyze').onclick = () => busy($('btnAnalyze'), '分析中...', async () => {
+  const sel = Object.keys(selected).filter(t => selected[t]);
+  if (!sel.length) { $('analyzeMsg').innerHTML = '<span class="err">请先在第 2 步选择表</span>'; return; }
+  $('analyzeMsg').textContent = '分析 agent 分析 '+sel.length+' 张表（LLM 提炼规则）...';
+  const r = await api('/api/analyze', Object.assign({}, db, { selected: sel }));
+  if (r.error) { $('analyzeMsg').innerHTML = '<span class="err">'+r.error+'</span>'; return; }
+  genRules = r.generationRules || [];
+  corrRules = r.correctionRules || [];
+  builders = r.builders || [];
+  analyzedTables = r.analyzedTables || [];  // T5.1：生成计划（每表列模式）
+  originalRules = JSON.parse(JSON.stringify(genRules.concat(corrRules)));  // agent 原版（Diff 基准）
+  renderRules();
+  $('savedBadge').textContent = r.saved ? '已保存到 project_rules.json ✓' : '保存失败';
+  // 推荐行数回填
+  (r.rowRecommend || {}).forEach ? Object.entries(r.rowRecommend || {}).forEach(([t,n]) => {
+    const inp = document.querySelector('input[data-table="'+t+'"]');
+    if (inp) inp.value = n;
+  }) : 0;
+  $('analyzeMsg').innerHTML = '分析完成：'+r.analyzedTables.length+' 张表，三段规则已生成（可在右侧对话修改）';
+  chat({ role:'ai', text: '已生成三段规则。输入指令可修改，如：商品名加品牌前缀 / 删掉状态联动' });
+});
+$('btnLoadRules').onclick = async () => {
+  $('btnLoadRules').disabled = true;
+  try {
+    const r = await fetch('/api/load-rules').then(x=>x.json());
+    if (!r.exists) { $('analyzeMsg').innerHTML = '<span class="err">没有已保存的规则，请先分析</span>'; return; }
+    genRules = r.generationRules || [];
+    corrRules = r.correctionRules || [];
+    builders = r.builders || [];
+    originalRules = JSON.parse(JSON.stringify(genRules.concat(corrRules)));
+    renderRules();
+    $('savedBadge').textContent = '已加载上次分析规则（可对话修改）✓';
+    $('analyzeMsg').textContent = '规则复用成功：'+genRules.length+' 条前置约束 + '+corrRules.length+' 条后置修正';
+  } finally { $('btnLoadRules').disabled = false; }
+};
+function renderRules() {
+  const line = r => '<div class="rule-line">'+ (r.expression || r.type) +
+    ' <span class="conf">'+(r.confidence<0.7?'⚠️ '+Math.round(r.confidence*100)+'% 低置信度':Math.round(r.confidence*100)+'%')+'</span></div>';
+  $('genDoc').innerHTML = genRules.map(line).join('') || '<div class="muted">无</div>';
+  $('corrDoc').innerHTML = corrRules.map(line).join('') || '<div class="muted">无</div>';
+  $('builderDoc').textContent = builders.map(b => b.table + '（锚点 '+(b.anchorColumn||'-')+'）').join('；') || '无';
+  // T5.4：构建器为只读展示（列级配置走 generation-plan.json 人工确认；编辑交互已移除，避免"改了不生效"）
+  $('builderEdit').innerHTML = '';
+  $('btnSaveBuilder').style.display = 'none';
+  // T5.1：生成计划（每表列模式，分析产出——用户看到"怎么生成"而非只见规则）
+  $('planDoc').innerHTML = (analyzedTables || []).map(t => {
+    const cols = (t.columns || []).map(c => c.column + ':' + c.mode).join(', ');
+    return '<div class="rule-line">'+t.name+' <span class="muted">('+(t.builder||'?')+')</span>'+(cols ? ' — '+cols : '')+'</div>';
+  }).join('') || '<div class="muted">无（先在第 2 步选表并分析）</div>';
+}
+function allRules() { return genRules.concat(corrRules); }
+function splitRules(nr) { genRules = nr.filter(r => r.type !== 'AGG_EQUAL'); corrRules = nr.filter(r => r.type === 'AGG_EQUAL'); }
+function chat(msg) {
+  const d = document.createElement('div');
+  d.className = 'msg ' + (msg.role === 'user' ? 'user' : 'ai');
+  d.textContent = (msg.role === 'user' ? '你：' : 'AI：') + msg.text;
+  $('chatMsgs').appendChild(d); $('chatMsgs').scrollTop = $('chatMsgs').scrollHeight;
+}
+$('btnSend').onclick = async () => {
+  const ins = $('chatInput').value.trim();
+  if (!ins) return;
+  chat({ role:'user', text: ins }); $('chatInput').value = '';
+  chat({ role:'ai', text: '正在修订规则...' });
+  const r = await api('/api/refine-rules', { rules: allRules(), instruction: ins });
+  if (r.error) { const last = $('chatMsgs').lastElementChild; last.textContent = 'AI：'+r.error; return; }
+  // 三层防护①：试编译（语法校验，失败拒绝应用）
+  const comp = await api('/api/compile-rules', { rules: r.rules || allRules() });
+  if (!comp.ok) {
+    const last = $('chatMsgs').lastElementChild;
+    last.textContent = 'AI：试编译失败（未应用）：' + (comp.errors || []).join('；');
+    return;
+  }
+  splitRules(r.rules || allRules()); renderRules(); showDiff();
+  const last = $('chatMsgs').lastElementChild;
+  last.textContent = 'AI：已修订（前置 '+genRules.length+' / 后置修正 '+corrRules.length+'）';
+};
+function showDiff() {
+  const origKeys = new Set(originalRules.map(r => r.table+'.'+r.column+'.'+r.type));
+  const cur = allRules(), curKeys = new Set(cur.map(r => r.table+'.'+r.column+'.'+r.type));
+  const added = cur.filter(r => !origKeys.has(r.table+'.'+r.column+'.'+r.type)).length;
+  const removed = originalRules.filter(r => !curKeys.has(r.table+'.'+r.column+'.'+r.type)).length;
+  $('diffInfo').textContent = '相对 agent 原版：新增 '+added+' 条 / 删除 '+removed+' 条';
+  $('btnRestore').style.display = (added || removed) ? '' : 'none';
+}
+$('btnRestore').onclick = () => {
+  splitRules(JSON.parse(JSON.stringify(originalRules)));
+  renderRules(); showDiff();
+  chat({ role:'ai', text: '已恢复为 agent 建议版本' });
+};
+$('chatInput').addEventListener('keydown', e => { if (e.key === 'Enter') $('btnSend').click(); });
+$('btnToGen3').onclick = () => { showView(4); maxStep = 4; };
+
+/* ④ 生成 + 预览 */
+$('btnGen4').onclick = () => busy($('btnGen4'), '生成中...', async () => {
+  const rows = {};
+  Object.keys(selected).filter(t => selected[t]).forEach(t => {
+    const inp = document.querySelector('input[data-table="'+t+'"]');
+    rows[t] = parseInt(inp ? inp.value : 0) || 0;
+  });
+  if (!Object.keys(rows).length) { $('genMsg').innerHTML = '<span class="err">请先选择表</span>'; return; }
+  $('genMsg').textContent = '生成中...';
+  const r = await api('/api/generate', Object.assign({}, db, { rows }));
+  if (r.error) { $('genMsg').innerHTML = '<span class="err">'+r.error+'</span>'; return; }
+  genResult = r;
+  $('genResult').innerHTML = Object.entries(r.actualCounts||{}).map(([t,n]) =>
+    '<tr><td>'+t+'</td><td>'+(rows[t]||'-')+'</td><td>'+n+'</td><td>'+(r.validation===0?'<span class="ok">✓</span>':'<span class="warn">'+r.validation+'</span>')+'</td></tr>').join('');
+  $('genMsg').innerHTML = r.validation===0
+    ? '<span class="ok">✓ 校验通过，耗时 '+r.elapsedMs+'ms</span>'
+    : '<span class="warn">⚠ 校验 '+r.validation+' 个问题，自动修正中...</span>';
+  // T5.3：校验有问题 → 自动调 /api/correct 收敛（修正发生在 staging，发布前二次确认兜底）
+  if (r.validation > 0) {
+    const fix = await api('/api/correct', db);
+    if (fix && fix.error !== undefined) {
+      $('genMsg').innerHTML = '<span class="warn">⚠ 校验 '+r.validation+' 个问题，自动修正失败：'+fix.error+'</span>';
+    } else if (fix && fix.finalErrors === 0) {
+      $('genMsg').innerHTML = '<span class="ok">✓ 自动修正收敛：修复 '+fix.fixCount+' 处，'+fix.iterations+' 轮，剩余 0 问题</span>';
+    } else {
+      $('genMsg').innerHTML = '<span class="warn">⚠ 修正 '+fix.iterations+' 轮，修复 '+fix.fixCount+' 处，仍剩 '+(fix.finalErrors||'?')+' 个问题</span>';
+    }
+  }
+  // 发布表（策略：仅追加 APPEND / 不动 KEEP，不清空目标库）
+  $('publishTable').innerHTML = Object.keys(r.actualCounts||{}).map(t =>
+    '<tr><td>'+t+'</td><td>'+r.actualCounts[t]+'</td><td><select data-table="'+t+'"><option>APPEND</option><option>KEEP</option></select></td></tr>').join('');
+  maxStep = 5;
+});
+$('btnToScore').onclick = () => { showView(5); maxStep = 5; };
+$('btnPreview').onclick = async () => {
+  $('previewMsg').textContent = '读取预览...';
+  const r = await api('/api/preview', db);
+  if (r.error) { $('previewMsg').innerHTML = '<span class="err">'+r.error+'</span>'; return; }
+  publishMeta.preview = r;
+  const tables = Object.keys(r);
+  $('previewTable').innerHTML = tables.map(t => '<option>'+t+'</option>').join('');
+  if (tables.length) { $('previewTable').value = tables[0]; loadPreview(); }
+  else $('previewMsg').textContent = '无生成数据，请先生成';
+};
+$('previewTable').onchange = loadPreview;
+function loadPreview() {
+  const t = $('previewTable').value, data = publishMeta.preview && publishMeta.preview[t];
+  if (!data || !data.rows.length) { $('previewMsg').textContent = '表 '+t+' 无数据'; $('previewWrap').style.display='none'; return; }
+  const cols = Object.keys(data.rows[0].values || data.rows[0]);
+  $('previewHead').innerHTML = '<tr>'+cols.map(c=>'<th>'+c+'</th>').join('')+'</tr>';
+  $('previewBody').innerHTML = data.rows.map(r => {
+    const values = r.values || r, lineage = r.lineage || {};
+    return '<tr>'+cols.map(c=>{
+      const v = values[c];
+      const line = lineage[c] ? ' <span class="muted">['+lineage[c]+']</span>' : '';
+      return '<td>'+(v===null||v===undefined?'<span class="muted">null</span>':(String(v).length>30?String(v).substring(0,30)+'…':v))+line+'</td>';
+    }).join('')+'</tr>';
+  }).join('');
+  $('previewWrap').style.display = 'table';
+  $('previewMsg').textContent = '表 '+t+' 共 '+data.total+' 行，预览前 '+data.rows.length+' 行';
+}
+
+/* ⑤ 评分 + 发布 */
+$('btnScore').onclick = () => busy($('btnScore'), '评分中...', async () => {
+  const r = await api('/api/score', db);
+  if (r.error) { $('scoreMsg').innerHTML = '<span class="err">'+r.error+'</span>'; return; }
+  $('scoreMsg').textContent = '总体分 ' + r.overall.toFixed(3);
+  $('scoreTable').innerHTML = Object.entries(r.tables||{}).map(([t,s]) => {
+    const worst = (s.columns||[]).slice().sort((a,b)=>a.score-b.score)[0];
+    return '<tr><td>'+t+'</td><td>'+s.score.toFixed(3)+'</td><td class="muted">'+(worst?worst.column+' '+worst.method+'='+worst.distance.toFixed(2):'-')+'</td></tr>';
+  }).join('');
+});
+function collectPolicies() {
+  const p = {};
+  document.querySelectorAll('#publishTable select').forEach(s => p[s.dataset.table] = s.value);
+  return p;
+}
+$('btnExportSql').onclick = () => busy($('btnExportSql'), '生成 SQL 中...', async () => {
+  const r = await api('/api/export-sql', db);
+  if (r.error) { $('publishMsg').innerHTML = '<span class="err">'+r.error+'</span>'; return; }
+  const blob = new Blob([r.sql], { type: 'text/sql' });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob); a.download = 'dataforge_export.sql'; a.click();
+  $('publishMsg').textContent = '✓ 已导出 '+(r.inserts||0)+' 条 INSERT 语句（dataforge_export.sql）';
+});
+$('btnPublish').onclick = () => busy($('btnPublish'), '发布中...', async () => {
+  const pre = await api('/api/publish', Object.assign({}, db, { confirmed:false, policies: collectPolicies() }));
+  if (pre.confirmed === false) {
+    const confirmed = confirm('确认将生成数据追加到目标库 '+db.dbSchema+' 吗？\n\n'+
+      Object.entries(pre.tables||{}).map(([t,n])=>t+'（'+n+' 行）').join('\n')+'\n\n（只追加 APPEND，不清空目标库）');
+    if (!confirmed) { $('publishMsg').innerHTML = '<span class="warn">已取消发布</span>'; return; }
+    const r = await api('/api/publish', Object.assign({}, db, { confirmed:true, policies: collectPolicies() }));
+    $('publishMsg').innerHTML = r.errors && r.errors.length
+      ? '<span class="err">部分失败：'+r.errors.join('；')+'</span>'
+      : '<span class="ok">✓ 已发布 '+r.published+' 张表（跳过 '+r.skipped.length+' KEEP）</span>';
+    $('btnHistory').click();
+  } else $('publishMsg').textContent = pre.message;
+});
+$('btnHistory').onclick = async () => {
+  $('historyList').textContent = JSON.stringify(await fetch('/api/history').then(x=>x.json()), null, 2);
+};
+
+/* 初始化：预填配置 */
+fetch('/api/config').then(r=>r.json()).then(c => {
+  db = { dbHost:c.dbHost, dbPort:c.dbPort, dbUser:c.dbUser, dbPassword:c.dbPassword, dbSchema:c.dbSchema };
+  $('dbHost').value=c.dbHost; $('dbPort').value=c.dbPort; $('dbUser').value=c.dbUser;
+  $('dbPassword').value=c.dbPassword;
+  // dbSchema 是下拉框：预填已保存库名（未测试连接时插入一个手动选项）
+  const sel = $('dbSchema');
+  if (c.dbSchema) {
+    const opt = document.createElement('option');
+    opt.value = c.dbSchema; opt.textContent = c.dbSchema; opt.selected = true;
+    sel.appendChild(opt); sel.disabled = false;
+  }
+  if (c.projectPath) $('projectPath').value = c.projectPath;
+  if (c.cacheStatus === 'RULES_EXISTS') {
+    $('btnLoadRules').style.display = '';
+    $('savedBadge').textContent = '已有保存的规则，可复用 ✓';
+  }
+  refreshBadge();
+});
+</script>
+</body>
+</html>
