@@ -1,0 +1,39 @@
+# 凭证
+.env
+
+# 项目文档（人工维护，不入库）
+CLAUDE.md
+README.md
+
+# 面试问答（私人准备，不入库）
+docs/interview-prep.md
+docs/INTERVIEW.md
+
+# 内部设计草稿（非定稿，不入库）
+docs/*_REDESIGN.md
+
+# 运行历史（Web 功能产物，不入库）
+history/
+
+# Maven
+target/
+*.class
+*.jar
+*.war
+
+# IDE
+.idea/
+*.iml
+.vscode/
+
+# OS
+.DS_Store
+
+# 前端
+node_modules/
+frontend/dist/
+
+# 缓存
+*.log
+cache/
+.dataforge/

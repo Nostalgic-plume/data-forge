@@ -1,0 +1,41 @@
+spring:
+  application:
+    name: dataforge
+  # CLI 模式：不启动 web 服务器（Spring AI starter 自带 reactive 依赖）
+  main:
+    web-application-type: none
+  # 确定性 JDBC 通道（校验/修正/staging，凭证走 .env 环境变量注入）
+  datasource:
+    url: jdbc:mysql://${DB_HOST:localhost}:${DB_PORT:3306}/?useSSL=false&serverTimezone=Asia/Shanghai&rewriteBatchedStatements=true&useUnicode=true&characterEncoding=utf8&allowPublicKeyRetrieval=true
+    username: ${DB_USER:root}
+    password: ${DB_PASSWORD:}
+  ai:
+    # OpenAI 兼容端点（DeepSeek 官方 / DashScope 兼容端点均可）
+    openai:
+      base-url: ${LLM_BASE_URL:https://api.deepseek.com}
+      api-key: ${LLM_API_KEY:sk-xxx}
+      chat:
+        options:
+          model: ${LLM_MODEL:deepseek-v4-flash}
+          temperature: 0.3
+
+logging:
+  level:
+    com.dataforge: info
+    org.springframework.ai: warn
+
+# DataForge 生成参数（CLI --xxx 参数可覆盖）
+dataforge:
+  # --mock-llm 干跑模式：注入确定性 MockLlmClient，无需真实 key
+  mock-llm: false
+  seed: 42
+  batch-size: 100
+  max-concurrency: 8
+  # PK 策略：sequential（自增语义，默认）| snowflake
+  pk-strategy: sequential
+  # 生成缓存目录（runFingerprint + 表名 → 产物 JSON）
+  cache-dir: .dataforge/cache
+  # 引用闭包中未指定行数的父表最小行数
+  min-parent-rows: 5
+  # 修正 agent 收敛循环上限（P3）
+  max-iterations: 10
