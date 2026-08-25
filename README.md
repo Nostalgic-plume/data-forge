@@ -1,0 +1,83 @@
+# DataForge
+
+#### 介绍
+DataForge 是一款基于 LLM 的智能数据生成平台。传统 Faker 工具生成的随机数据在 RAG 语义搜索、智能客服等场景中，因数据之间缺乏关联、语义失真、数值分布偏离真实库，导致算法评测置信度下降。本项目通过**数据库 DDL 与项目源码自动分析业务规则 → 生成关联完整、语义真实的模拟数据 → 校验修正 → 落库**，为 AI 应用评测提供高质量合成数据。
+
+核心卖点：
+- **三 Agent 协作**：分析 Agent（提炼业务规则 + 生成计划）、生成 Agent（两阶段规模化生产）、修正 Agent（ReAct 收敛循环保证质量）
+- **信任模型红线**：LLM 只负责"发现规则、语义决策"，规则执行全部由确定性代码编译（校验 SQL / 修正 SQL），结果可复现、可审计
+- **配置驱动通用化**：换任何业务域只改生成计划配置，零 Java 改动
+- **规模化性能**：两阶段生成 + 表间/表内并行，全量 12527 行 mock 干跑约 20 分 41 秒（对比纯 LLM 约 2.5 小时）
+
+#### 软件架构
+
+**技术栈**：Java 21 · Spring Boot 3.5 · Spring AI 1.1 · MySQL 8（staging 工作库）· 虚拟线程
+
+
+- **信任模型**：LLM 只发现规则（一次性 + 人工确认），规则执行用确定性代码——"LLM 发现、代码执行"是红线
+- **staging 先行**：生成/修正/校验在隔离工作库，收敛 + 人工确认后按保留策略发布，回滚 = 重建工作区
+- **增量生成**：全量是增量的特例——起始 ID=MAX+1 + 现有池引用 + 修正作用域限定新区间
+
+#### 安装教程
+
+1. 环境要求：JDK 21、Maven 3.8+、MySQL 8（可选，落库/校验模式需要）
+2. 配置凭证：复制 `.env.example` 为 `.env` 并填写（凭证一律环境变量注入，不入库）
+   ```
+   LLM_API_KEY=sk-xxx            # DeepSeek/OpenAI 兼容端点 Key
+   LLM_BASE_URL=...              # 模型端点
+   LLM_MODEL=...                 # 模型名
+   DB_HOST=127.0.0.1             # MySQL（落库/校验模式需要）
+   DB_PORT=3306
+   DB_USER=root
+   DB_PASSWORD=xxx
+   ```
+3. 构建：
+   ```bash
+   mvn package
+   ```
+
+#### 使用说明
+
+**1. 分析业务规则（可选，产出 project_rules.json + generation-plan.json）**
+```bash
+java -jar target/dataforge-0.1.0-SNAPSHOT.jar --analyze shop --ddl docs/schema.sql
+```
+
+**2. 生成数据（mock 干跑，确定性、无需真实 LLM）**
+```bash
+java -jar target/dataforge-0.1.0-SNAPSHOT.jar --mock-llm --ddl docs/schema.sql \
+  --rows user=20,product=20,sku=80,orders=100
+```
+
+**3. 生成 + 落库 + SQL 校验**
+```bash
+java -jar ... --mock-llm --ddl docs/schema.sql --rows ... --staging shop
+```
+
+**4. 生成 + 落库 + 校验 + 修正收敛（完整流程）**
+```bash
+java -jar ... --ddl docs/schema.sql --rows ... --staging shop --correct
+```
+
+**5. Web 界面**
+```bash
+java -jar ... --mock-llm --web --port 8099
+```
+
+常用参数：`--seed` `--batch-size` `--max-concurrency` `--no-cache` `--incremental` `--score`
+
+#### 参与贡献
+
+1. Fork 本仓库
+2. 新建 Feat_xxx 分支
+3. 提交代码
+4. 新建 Pull Request
+
+#### 特技
+
+1. 使用 Readme\_XXX.md 来支持不同的语言，例如 Readme\_en.md, Readme\_zh.md
+2. Gitee 官方博客 [blog.gitee.com](https://blog.gitee.com)
+3. 你可以 [https://gitee.com/explore](https://gitee.com/explore) 这个地址来了解 Gitee 上的优秀开源项目
+4. [GVP](https://gitee.com/gvp) 全称是 Gitee 最有价值开源项目，是综合评定出的优秀开源项目
+5. Gitee 官方提供的使用手册 [https://gitee.com/help](https://gitee.com/help)
+6. Gitee 封面人物是一档用来展示 Gitee 会员风采的栏目 [https://gitee.com/gitee-stars/](https://gitee.com/gitee-stars/)
