@@ -11,7 +11,7 @@ import com.dataforge.validation.SqlValidator;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
 
-import java.nio.file.Path;
+import java.nio.charset.StandardCharsets;
 import java.util.*;
 import java.util.function.Supplier;
 
@@ -23,13 +23,21 @@ import static org.junit.jupiter.api.Assertions.*;
  */
 class CorrectionAgentTest {
 
-    private static final String SHOP_DDL = "d:/claudecode/shop/docs/data-gen/schema_for_tool.sql";
+    /** shop 18 表 DDL（测试资源，自包含不依赖外部仓库） */
+    private static final String SHOP_DDL = "schema/shop_schema.sql";
     private static TableMeta orders;
 
     @BeforeAll
     static void parseShopDdl() throws Exception {
-        orders = new DdlParser().parse(Path.of(SHOP_DDL)).tables().stream()
+        orders = new DdlParser().parse(readShopDdl()).tables().stream()
                 .filter(t -> t.name().equals("orders")).findFirst().orElseThrow();
+    }
+
+    private static String readShopDdl() throws Exception {
+        try (var in = CorrectionAgentTest.class.getResourceAsStream("/" + SHOP_DDL)) {
+            if (in == null) throw new IllegalStateException("测试资源缺失: " + SHOP_DDL);
+            return new String(in.readAllBytes(), StandardCharsets.UTF_8);
+        }
     }
 
     /** 状态化 mock JDBC：按 SQL 片段返回预设行，模拟"修正生效"（再校验转绿） */

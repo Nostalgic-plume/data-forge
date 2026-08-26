@@ -21,6 +21,7 @@ import com.dataforge.model.SourceTag;
 import com.dataforge.model.TableMeta;
 import com.dataforge.model.ValidationReport;
 import com.dataforge.parser.DdlParser;
+import com.dataforge.report.RunReport;
 import com.dataforge.validation.DataValidator;
 import com.dataforge.validation.Scorer;
 import com.dataforge.validation.SqlValidator;
@@ -309,22 +310,32 @@ public class DataForgeCli implements CommandLineRunner {
         }
 
         // 7. --staging：落 staging 工作库 + SQL 校验；--correct 时进入修正 agent 收敛循环
+        CorrectionOutcome outcome = null;
         if (opts.stagingSchema() != null && !opts.stagingSchema().isBlank()) {
             if (opts.correct()) {
                 if (opts.fixOnly()) {
                     // 只修正：读现有 staging → 校验 → 修正（不重建，保留库内数据）
                     Map<String, GeneratedData> existing =
                             stagingManager.read(opts.stagingSchema(), genTables);
-                    printCorrection(opts.stagingSchema(), genTables, existing,
+                    outcome = printCorrection(opts.stagingSchema(), genTables, existing,
                             opts.maxIterations(), false);
                 } else {
-                    printCorrection(opts.stagingSchema(), genTables, result.data(),
+                    outcome = printCorrection(opts.stagingSchema(), genTables, result.data(),
                             opts.maxIterations(), true);
                 }
             } else {
                 printSqlValidation(opts.stagingSchema(), genTables);
             }
         }
+
+        // 8. 运行报告（可观测性）：聚合生成/校验/修正指标 → 统一 JSON + 落盘 run-reports/
+        RunReport report = new RunReport()
+                .mode(outcome != null ? "generate+correct" : "generate")
+                .generation(result);
+        if (outcome != null) {
+            report.validation(outcome.initial()).correction(outcome.fix());
+        }
+        report.printAndSave();
     }
 
     /** P4 流水线修正汇总（表完成事件触发，边生成边落库边修正） */
@@ -435,7 +446,7 @@ public class DataForgeCli implements CommandLineRunner {
         } catch (Exception e) {
             log.warn("project_rules.json 读取失败（回退内置默认）: {}", e.getMessage());
         }
-        return currentRules();
+        return ProjectRules.withDefaultCorrectionRules();
     }
 
     /** P6 分析报告：提炼规则清单（人工检查点）+ 置信度 + 行数推荐 + 落盘 */
@@ -452,6 +463,16 @@ public class DataForgeCli implements CommandLineRunner {
         System.out.println();
         System.out.println("规则清单（置信度 <0.7 优先人工确认）:");
         for (ProjectRules.Rule r : result.rules().generationRules()) {
+            String flag = r.confidence() < 0.7 ? " ⚠️ 低置信度" : "";
+            System.out.printf("  [%s] %s.%s — %s (置信度 %.1f)%s%n",
+                    r.type(), r.table(), r.column(), r.expression(), r.confidence(), flag);
+            if (!r.params().isEmpty()) {
+                System.out.println("      params=" + r.params());
+            }
+        }
+        System.out.println();
+        System.out.println("后置修正规则（校验/修正类，含 CUSTOM_SQL 自定义校验）:");
+        for (ProjectRules.Rule r : result.rules().correctionRules()) {
             String flag = r.confidence() < 0.7 ? " ⚠️ 低置信度" : "";
             System.out.printf("  [%s] %s.%s — %s (置信度 %.1f)%s%n",
                     r.type(), r.table(), r.column(), r.expression(), r.confidence(), flag);
@@ -489,6 +510,7 @@ public class DataForgeCli implements CommandLineRunner {
         } catch (Exception e) {
             System.err.println("project_rules 落盘失败: " + e.getMessage());
         }
+        new RunReport().mode("analyze").analysis(result).printAndSave();
     }
 
     /** P7 软评分：读 staging 生成数据 vs 真实库参考分布 → 逐列 KS/JS 距离报告 */
@@ -519,6 +541,7 @@ public class DataForgeCli implements CommandLineRunner {
                 System.out.printf("语义抽样（%s，前 5 行）: %.2f%n", sample.tableName(), semantic);
             }
         }
+        new RunReport().mode("score").scoring(report).printAndSave();
     }
 
 
@@ -539,13 +562,17 @@ public class DataForgeCli implements CommandLineRunner {
         return real;
     }
 
+    /** 修正流程产物（RunReport 组装用）：首轮校验 + 收敛结果 */
+    private record CorrectionOutcome(ValidationReport initial, CorrectionAgent.CorrectionResult fix) {
+    }
+
     /**
      * 修正 agent 流程：落库 → 首轮校验 → ReAct 收敛循环（决策→id 锚定应用→再校验）
      * → 收敛报告（含回归回滚标记 + 修正明细 + 最终报告）。
      */
-    private void printCorrection(String schemaName, List<TableMeta> tables,
-                                 Map<String, GeneratedData> data, int maxIterations,
-                                 boolean recreate) {
+    private CorrectionOutcome printCorrection(String schemaName, List<TableMeta> tables,
+                                              Map<String, GeneratedData> data, int maxIterations,
+                                              boolean recreate) {
         System.out.println();
         System.out.println("=== 修正 agent：ReAct 收敛循环（staging 工作库）===");
         if (recreate) {
@@ -564,7 +591,7 @@ public class DataForgeCli implements CommandLineRunner {
         }
         if (initial.totalErrors() == 0) {
             System.out.println("✅ 首轮校验全通过，无需修正");
-            return;
+            return new CorrectionOutcome(initial, null);
         }
 
         CorrectionAgent.CorrectionResult fix = correctionAgent.correct(
@@ -603,6 +630,7 @@ public class DataForgeCli implements CommandLineRunner {
                         b.errorType(), b.table(), b.column(), b.count(), b.ratio() * 100, b.rootCause());
             }
         }
+        return new CorrectionOutcome(initial, fix);
     }
 
     /** 落 staging 库并跑 SQL 校验（先清旧 → 建库建表 → 批量导入 → Detect/Aggregate 报告） */
@@ -625,6 +653,7 @@ public class DataForgeCli implements CommandLineRunner {
                         b.errorType(), b.table(), b.column(), b.count(), b.ratio() * 100, b.rootCause());
             }
         }
+        new RunReport().mode("validate").validation(report).printAndSave();
     }
 
     private void printSummary(CliOptions opts, GenerationAgent.GenerationResult result,

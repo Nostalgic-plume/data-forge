@@ -19,6 +19,9 @@ import java.util.*;
 @Component
 public class GenericExpander {
 
+    private static final org.slf4j.Logger log =
+            org.slf4j.LoggerFactory.getLogger(GenericExpander.class);
+
     /** 从生成计划生成派生表（target = context.rowCount，FK 从父表池随机引用） */
     public List<DataRow> generate(GenerationPlan.TablePlan plan, TableMeta table,
                                   PipelineContext context,
@@ -28,11 +31,14 @@ public class GenericExpander {
         int seqStart = seqOffset(plan, table, completedData);
         Set<String> plannedCols = plan.columns().stream()
                 .map(GenerationPlan.ColumnPlan::column).collect(java.util.stream.Collectors.toSet());
+        // 复合唯一键 fk 列：组合级唯一取样（如 cart(user_id,sku_id)/user_role(user_id,role_id)，
+        // 随机引用会撞唯一键导致 MySQL 落库拒绝）
+        Map<String, List<Object>> uniqueFk = buildUniqueKeyAssignments(plan, table, completedData, target, rng);
         List<DataRow> rows = new ArrayList<>(target);
         for (int i = 0; i < target; i++) {
             Map<String, Object> values = new LinkedHashMap<>();
             for (GenerationPlan.ColumnPlan cp : plan.columns()) {
-                values.put(cp.column(), generateValue(cp, table, context, completedData, i, seqStart, rng));
+                values.put(cp.column(), generateValue(cp, table, context, completedData, i, seqStart, rng, uniqueFk));
             }
             // 默认列填充：plan 未覆盖的列（避免 NOT NULL 列 null 导致落库失败）
             for (ColumnDef col : table.columns()) {
@@ -69,9 +75,15 @@ public class GenericExpander {
 
     private Object generateValue(GenerationPlan.ColumnPlan cp, TableMeta table, PipelineContext context,
                                  Map<String, Map<String, List<Object>>> completedData,
-                                 int index, int seqStart, Random rng) {
+                                 int index, int seqStart, Random rng,
+                                 Map<String, List<Object>> uniqueFk) {
         return switch (cp.mode()) {
-            case "fk" -> fkValue(cp, completedData, rng);
+            case "fk" -> {
+                // 复合唯一键 fk 列：用预生成的组合级唯一分配（防撞唯一键）
+                List<Object> assigned = uniqueFk == null ? null : uniqueFk.get(cp.column());
+                if (assigned != null) yield assigned.get(index % assigned.size());
+                yield fkValue(cp, completedData, rng);
+            }
             case "anchorPrice" -> anchorPriceValue(cp, completedData, rng);
             case "seq" -> seqValue(cp, index, seqStart);
             case "weighted" -> weightedValue(cp, rng);
@@ -85,6 +97,63 @@ public class GenericExpander {
             case "llm" -> null;   // 语义列（商品名/规格等）：ContentGen 展开后 LLM 批量回填
             default -> null;
         };
+    }
+
+    /**
+     * 复合唯一键 fk 列组合级唯一取样：对表每个唯一键组，涉及的 fk 列从各自父表池
+     * 随机组合并去重（保证 MySQL 唯一索引不冲突，如 cart(user_id,sku_id)）。取样不足
+     * 时回退随机（允许重复，由校验/修正收敛兜底）。
+     */
+    private static Map<String, List<Object>> buildUniqueKeyAssignments(
+            GenerationPlan.TablePlan plan, TableMeta table,
+            Map<String, Map<String, List<Object>>> completedData, int target, Random rng) {
+        if (table.uniqueKeys() == null || table.uniqueKeys().isEmpty()) return null;
+        Map<String, GenerationPlan.ColumnPlan> cpByCol = plan.columns().stream()
+                .collect(java.util.stream.Collectors.toMap(
+                        GenerationPlan.ColumnPlan::column, c -> c, (a, b) -> a));
+        Map<String, List<Object>> result = new HashMap<>();
+        for (String uk : table.uniqueKeys()) {
+            String[] colNames = Arrays.stream(uk.split(",")).map(String::trim).toArray(String[]::new);
+            // 仅处理唯一键中 plan 标 fk 的列
+            List<String> fkCols = Arrays.stream(colNames)
+                    .filter(cpByCol::containsKey)
+                    .filter(c -> "fk".equals(cpByCol.get(c).mode()))
+                    .toList();
+            if (fkCols.isEmpty()) continue;
+            List<List<Object>> pools = new ArrayList<>();
+            for (String c : fkCols) {
+                GenerationPlan.ColumnPlan cp = cpByCol.get(c);
+                Map<String, List<Object>> parent = completedData.get(cp.param("ref_table"));
+                List<Object> pool = parent == null ? List.of() : parent.get(
+                        cp.param("ref_column") != null ? cp.param("ref_column") : "id");
+                pools.add(pool == null ? List.of() : pool);
+            }
+            if (pools.stream().anyMatch(List::isEmpty)) continue;
+            Map<String, List<Object>> perCol = new HashMap<>();
+            for (String c : fkCols) perCol.put(c, new ArrayList<>(target));
+            Set<List<Object>> seen = new HashSet<>();
+            int filled = 0, attempts = 0;
+            while (filled < target && attempts < Math.max(target * 100, 1000)) {
+                attempts++;
+                List<Object> combo = new ArrayList<>(fkCols.size());
+                for (List<Object> pool : pools) combo.add(pool.get(rng.nextInt(pool.size())));
+                if (seen.add(combo)) {
+                    for (int j = 0; j < fkCols.size(); j++) perCol.get(fkCols.get(j)).add(combo.get(j));
+                    filled++;
+                }
+            }
+            if (filled < target) {
+                log.warn("唯一键组合取样不足（{}/{}），表 `{}` 剩余行回退随机（修正收敛兜底）",
+                        filled, target, table.name());
+                for (int i = filled; i < target; i++) {
+                    for (int j = 0; j < fkCols.size(); j++) {
+                        perCol.get(fkCols.get(j)).add(pools.get(j).get(rng.nextInt(pools.get(j).size())));
+                    }
+                }
+            }
+            perCol.forEach((k, v) -> result.put(k, v));
+        }
+        return result.isEmpty() ? null : result;
     }
 
     /** FK：从父表（或指定 ref_table）PK 池随机引用（跨现有 + 新增）；zipf=true 走幂律长尾 */

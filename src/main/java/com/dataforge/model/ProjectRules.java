@@ -26,6 +26,10 @@ public record ProjectRules(
      *   <li>AGG_EQUAL — 聚合相等：{@code target.column = SUM(ref_table.sum_col GROUP BY join_col 对 target.id)}，
      *       params: {@code ref_table}（引用表）、{@code sum_col}（求和列）、{@code join_col}（ref 表关联 target.id 的列）</li>
      *   <li>FK / UNIQUE — 通用规则，由 DDL 元数据自动推导，不入 correctionRules</li>
+     *   <li>CUSTOM_SQL — 自定义校验（LLM 产 SQL）：params 含 {@code check_sql}（只读 SELECT，表名用
+     *       {@code {schema}} 占位符，结果必须含目标表 id 列）与可选 {@code fix_sql}（修复 UPDATE：
+     *       {@code UPDATE {schema}.表 SET ... WHERE id = {id}}，id 锚定防全表 UPDATE）、
+     *       {@code fix_column}（修正目标列，默认 rule.column()）。过 {@code SqlGate} 结构闸门后执行</li>
      * </ul>
      * P6 扩展：FORMULA / STATUS_FLOW / VALUE_RANGE / ENUM_WEIGHT。</p>
      */

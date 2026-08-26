@@ -12,7 +12,7 @@ import com.dataforge.validation.DataValidator;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
 
-import java.nio.file.Path;
+import java.nio.charset.StandardCharsets;
 import java.util.*;
 import java.util.stream.Collectors;
 
@@ -24,12 +24,20 @@ import static org.junit.jupiter.api.Assertions.*;
  */
 class IncrementalSmokeTest {
 
-    private static final String SHOP_DDL = "d:/claudecode/shop/docs/data-gen/schema_for_tool.sql";
+    /** shop 18 表 DDL（测试资源，自包含不依赖外部仓库） */
+    private static final String SHOP_DDL = "schema/shop_schema.sql";
     private static List<TableMeta> shopTables;
 
     @BeforeAll
     static void parseShopDdl() throws Exception {
-        shopTables = new DdlParser().parse(Path.of(SHOP_DDL)).tables();
+        shopTables = new DdlParser().parse(readShopDdl()).tables();
+    }
+
+    private static String readShopDdl() throws Exception {
+        try (var in = IncrementalSmokeTest.class.getResourceAsStream("/" + SHOP_DDL)) {
+            if (in == null) throw new IllegalStateException("测试资源缺失: " + SHOP_DDL);
+            return new String(in.readAllBytes(), StandardCharsets.UTF_8);
+        }
     }
 
     private static List<TableMeta> closure(Set<String> requested) {

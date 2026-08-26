@@ -274,7 +274,45 @@ public class MockLlmClient implements DataLlm {
                     "original_price ≥ price 且比率 ≤ 5", 0.6,
                     ProjectRules.Rule.Source.AGENT, Map.of("min", "price", "max", "price*5")));
         }
+        // 自定义校验（CUSTOM_SQL）：表含 logistics_no + status → 已发货必须有物流单号（通用跨域启发式）
+        String logisticsTable = findTableWithColumns(s, "logistics_no", "status");
+        if (logisticsTable != null) {
+            rules.add(new ProjectRules.Rule(logisticsTable, "logistics_no", "CUSTOM_SQL",
+                    "已发货订单必须有物流单号（表含 logistics_no 列）", 0.6,
+                    ProjectRules.Rule.Source.AGENT, Map.of(
+                    "check_sql", "SELECT t.`id` AS `id` FROM {schema}." + logisticsTable
+                            + " t WHERE t.`status` >= 2 AND (t.`logistics_no` IS NULL OR t.`logistics_no` = '')",
+                    "fix_sql", "UPDATE {schema}." + logisticsTable
+                            + " SET logistics_no = CONCAT('DF-LOG-', {id}) WHERE id = {id}",
+                    "fix_column", "logistics_no")));
+        }
         return rules;
+    }
+
+    /** 在 schemaSummary 里找同时含指定列的表名（通用启发式；未命中返回 null） */
+    private static String findTableWithColumns(String schemaSummary, String... cols) {
+        String currentTable = null;
+        StringBuilder block = new StringBuilder();
+        for (String line : schemaSummary.split("\n")) {
+            java.util.regex.Matcher tm = java.util.regex.Pattern.compile("^表 (\\w+):").matcher(line.trim());
+            if (tm.find()) {
+                if (currentTable != null && containsAll(block, cols)) return currentTable;
+                currentTable = tm.group(1);
+                block.setLength(0);
+                continue;
+            }
+            if (currentTable != null) block.append(line).append("\n");
+        }
+        if (currentTable != null && containsAll(block, cols)) return currentTable;
+        return null;
+    }
+
+    private static boolean containsAll(StringBuilder block, String[] cols) {
+        String b = block.toString();
+        for (String c : cols) {
+            if (!b.contains(c)) return false;
+        }
+        return true;
     }
 
     /** 结算：某表含 status 且 ≥2 日期列 → 提炼 STATUS_FLOW 规则（flow=日期列列表） */
@@ -329,9 +367,22 @@ public class MockLlmClient implements DataLlm {
                     "状态绝大多数为 4 已完成（用户确认）", 0.9,
                     ProjectRules.Rule.Source.USER_CONFIRMED, Map.of("weights", "4:0.85")));
         }
+        // 物流/发货指令：补 CUSTOM_SQL（已发货订单必须有物流单号，确定性可测）
+        if ((ins.contains("物流") || ins.contains("发货") || ins.contains("运单"))
+                && rules.stream().noneMatch(r -> r.type().equals("CUSTOM_SQL"))) {
+            rules.add(new ProjectRules.Rule("orders", "logistics_no", "CUSTOM_SQL",
+                    "已发货订单必须有物流单号（用户确认）", 0.9,
+                    ProjectRules.Rule.Source.USER_CONFIRMED, Map.of(
+                    "check_sql", "SELECT t.`id` AS `id` FROM {schema}.orders t"
+                            + " WHERE t.`status` >= 2 AND (t.`logistics_no` IS NULL OR t.`logistics_no` = '')",
+                    "fix_sql", "UPDATE {schema}.orders SET logistics_no = CONCAT('DF-LOG-', {id})"
+                            + " WHERE id = {id}",
+                    "fix_column", "logistics_no")));
+        }
         // 其他指令：追加一条用户备注规则（USER_OVERRIDE，用户声明 > agent 推断）
         if (!ins.isBlank() && !ins.contains("删") && !ins.contains("去")
-                && !ins.contains("金额") && !ins.contains("状态")) {
+                && !ins.contains("金额") && !ins.contains("状态")
+                && !ins.contains("物流") && !ins.contains("发货") && !ins.contains("运单")) {
             rules.add(new ProjectRules.Rule("custom", "custom", "USER_NOTE", ins, 1.0,
                     ProjectRules.Rule.Source.USER_OVERRIDE, Map.of()));
         }

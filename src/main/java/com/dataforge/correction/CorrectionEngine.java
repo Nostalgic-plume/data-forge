@@ -7,6 +7,7 @@ import com.dataforge.db.StagingManager;
 import com.dataforge.generator.RuleDataGenerator;
 import com.dataforge.llm.DataLlm;
 import com.dataforge.model.*;
+import com.dataforge.validation.SqlGate;
 import com.dataforge.validation.SqlValidator;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -48,13 +49,16 @@ public class CorrectionEngine {
         this.llm = llm;
     }
 
-    /** 修正动作：桶决策产物——受控批量 SQL 或逐行修正指令（id 锚定） */
+    /** 修正动作：桶决策产物——受控批量 SQL / CUSTOM_SQL 修复 SQL / 逐行修正指令（id 锚定） */
     record FixAction(
             String table,
             String errorType,
             String reason,
-            String applySql,         // 规则通道批量 SQL（可为 null → 走 fixes 逐行）
-            List<FixCommand> fixes   // 逐行修正（FK 重分配 / LLM 通道）
+            String applySql,         // 规则通道批量 SQL（可为 null → 走 fixes/fixSql）
+            List<FixCommand> fixes,  // 逐行修正（FK 重分配 / LLM 通道 / CUSTOM_SQL 血缘标记）
+            String fixSql,           // CUSTOM_SQL 修复 SQL（参数化，可为 null）
+            List<Long> fixIds,       // CUSTOM_SQL 问题行 id 列表（逐行绑定）
+            int fixParamCount        // fixSql 中 {id} 出现次数（参数填充次数）
     ) {
     }
 
@@ -144,6 +148,7 @@ public class CorrectionEngine {
             case "NON_NULL" -> planNonNull(bucket, rules, tables, staging, scopeMinId);
             case "FORMAT" -> planFormat(bucket, rules, tables, staging, scopeMinId);
             case "STATUS_FLOW" -> planStatusFlow(bucket, rules, staging, scopeMinId);
+            case "CUSTOM_SQL" -> planCustomSql(bucket, rules, tables, staging, scopeMinId);
             default -> planLlm(bucket, tables);
         };
     }
@@ -173,7 +178,7 @@ public class CorrectionEngine {
                 .toList();
         return new FixAction(rule.table(), "AGG_EQUAL", rule.expression(),
                 CorrectionSqls.aggEqualApplySql(staging, rule.table(), rule.column(),
-                        refTable, sumCol, joinCol, scopeMinId), fixes);
+                        refTable, sumCol, joinCol, scopeMinId), fixes, null, List.of(), 0);
     }
 
     /** 规则通道：唯一后缀去重（重复组保留 MIN(id)，其余追加 _<id>），零 LLM */
@@ -191,7 +196,8 @@ public class CorrectionEngine {
                         "唯一后缀去重"))
                 .toList();
         return new FixAction(bucket.table(), "UNIQUE_CONFLICT", "唯一去重",
-                CorrectionSqls.uniqueApplySql(staging, bucket.table(), bucket.column(), scopeMinId), fixes);
+                CorrectionSqls.uniqueApplySql(staging, bucket.table(), bucket.column(), scopeMinId),
+                fixes, null, List.of(), 0);
     }
 
     /** 规则通道：FK 重分配（悬挂的 FK 指向一个存在的父 PK，保留子行，id 锚定最小干预） */
@@ -217,7 +223,8 @@ public class CorrectionEngine {
                         Map.of(fk.column(), pool.get((int) (idOf(r) % pool.size()))),
                         "FK 重分配: 指向存在的父行"))
                 .toList();
-        return new FixAction(bucket.table(), "FK_ORPHAN", "FK 重分配", null, fixes);
+        return new FixAction(bucket.table(), "FK_ORPHAN", "FK 重分配", null, fixes,
+                null, List.of(), 0);
     }
 
     /** LLM 通道：修正值需语义理解 → LLM 判断值 → 逐行 UPDATE（id 锚定） */
@@ -240,7 +247,8 @@ public class CorrectionEngine {
                         Map.of(bucket.column(), f.get(bucket.column())), "LLM 语义修正"))
                 .toList();
         return fixes.isEmpty() ? null
-                : new FixAction(bucket.table(), bucket.errorType(), "LLM 语义修正", null, fixes);
+                : new FixAction(bucket.table(), bucket.errorType(), "LLM 语义修正", null, fixes,
+                null, List.of(), 0);
     }
 
     /** 规则通道：VALUE_RANGE 范围钳制（批量 SQL 秒级，零 LLM） */
@@ -258,7 +266,8 @@ public class CorrectionEngine {
                         Map.of(rule.column(), r.get("value")), rule.expression()))
                 .toList();
         return new FixAction(rule.table(), "VALUE_RANGE", rule.expression(),
-                CorrectionSqls.valueRangeApplySql(staging, rule.table(), rule.column(), min, max, scopeMinId), fixes);
+                CorrectionSqls.valueRangeApplySql(staging, rule.table(), rule.column(), min, max, scopeMinId),
+                fixes, null, List.of(), 0);
     }
 
     /** 规则通道：NON_NULL 补默认值（批量 SQL；default_value 缺省按列类型推导） */
@@ -277,7 +286,8 @@ public class CorrectionEngine {
                         Map.of(rule.column(), defaultVal), rule.expression()))
                 .toList();
         return new FixAction(rule.table(), "NON_NULL", rule.expression(),
-                CorrectionSqls.nonNullApplySql(staging, rule.table(), rule.column(), defaultVal, scopeMinId), fixes);
+                CorrectionSqls.nonNullApplySql(staging, rule.table(), rule.column(), defaultVal, scopeMinId),
+                fixes, null, List.of(), 0);
     }
 
     /** FORMAT：重生成合法格式值（RuleDataGenerator 按列类型确定性生成，逐行 id 锚定 UPDATE） */
@@ -301,7 +311,8 @@ public class CorrectionEngine {
             }
         }
         return fixes.isEmpty() ? null
-                : new FixAction(rule.table(), "FORMAT", rule.expression(), null, fixes);
+                : new FixAction(rule.table(), "FORMAT", rule.expression(), null, fixes,
+                null, List.of(), 0);
     }
 
     /** STATUS_FLOW：时间线补正需业务假设（增量未知），保守上报残留（防引入新错） */
@@ -314,11 +325,65 @@ public class CorrectionEngine {
         return null;
     }
 
+    /**
+     * CUSTOM_SQL 修正：LLM 产出的 fix_sql 修复 UPDATE（id 锚定，逐行绑定问题行 id）。
+     * fix_sql 缺失 / 闸门不过 → 上报残留（保守，防全表 UPDATE/写坏数据）。
+     * check_sql 重编译取<b>全部</b>受影响行（bucket.samples 只有前 3 条，不能只修 3 条）。
+     */
+    private FixAction planCustomSql(ValidationReport.Bucket bucket, ProjectRules rules,
+                                    List<TableMeta> tables, String staging, Long scopeMinId) {
+        ProjectRules.Rule rule = findCorrectionRule(bucket, rules, "CUSTOM_SQL");
+        if (rule == null) return null;
+        String fixSql = rule.params().get("fix_sql");
+        if (fixSql == null || fixSql.isBlank()) {
+            log.warn("桶 {}:{} CUSTOM_SQL 无 fix_sql，只检查不修正（上报残留）",
+                    bucket.table(), bucket.column());
+            return null;
+        }
+        TableMeta table = tables.stream()
+                .filter(t -> t.name().equals(bucket.table())).findFirst().orElse(null);
+        if (table == null) return null;
+        // 防御纵深：运行时重查 fix_sql 闸门（防手改 project_rules.json 注入坏 SQL）
+        if (!SqlGate.checkFixSql(fixSql, staging, table).isEmpty()) {
+            log.warn("桶 {}:{} CUSTOM_SQL fix_sql 未过闸门，上报残留", bucket.table(), bucket.column());
+            return null;
+        }
+        // 重编译 check_sql 取全部受影响行（含增量作用域过滤）
+        String checkSql = rule.params().get("check_sql");
+        List<Map<String, Object>> affected =
+                jdbc.query(SqlGate.compileCheckSql(checkSql, staging, table, tables));
+        if (affected.isEmpty()) return null;
+        List<Long> ids = affected.stream()
+                .map(CorrectionEngine::idOf)
+                .filter(id -> scopeMinId == null || id > scopeMinId)
+                .toList();
+        if (ids.isEmpty()) return null;
+        SqlGate.RenderedFix rendered = SqlGate.compileFixSql(fixSql, staging, table);
+        // 血缘标记（readBack 按 fix_column 标 CORRECTED；fixes 只作审计/血缘，实际修走 fixSql）
+        String fixCol = rule.params().getOrDefault("fix_column", rule.column());
+        List<FixCommand> lineage = ids.stream()
+                .map(id -> new FixCommand(rule.table(), id,
+                        Map.of(fixCol, "FIXED-BY-CUSTOM-SQL"), rule.expression()))
+                .toList();
+        return new FixAction(rule.table(), "CUSTOM_SQL", rule.expression(),
+                null, lineage, rendered.sql(), ids, rendered.paramCount());
+    }
+
     // ---- 应用修正（execute）----
 
-    /** 应用单个动作：规则通道批量 SQL + 逐行 id 锚定 UPDATE；返回本轮 FixCommand 审计记录 */
+    /** 应用单个动作：CUSTOM_SQL 修复 SQL / 规则通道批量 SQL / 逐行 id 锚定 UPDATE；返回本轮 FixCommand 审计记录 */
     private List<FixCommand> execute(FixAction action, String staging) {
         List<FixCommand> commands = new ArrayList<>();
+        if (action.fixSql() != null) {
+            // CUSTOM_SQL：参数化 fix_sql 逐行绑定问题行 id（{id} → ?，参数填充防注入）
+            for (Long id : action.fixIds()) {
+                Object[] params = new Object[action.fixParamCount()];
+                java.util.Arrays.fill(params, id);
+                jdbc.execute(action.fixSql(), params);
+            }
+            commands.addAll(action.fixes());
+            return commands;
+        }
         if (action.applySql() != null) {
             jdbc.execute(action.applySql());
             commands.addAll(action.fixes());

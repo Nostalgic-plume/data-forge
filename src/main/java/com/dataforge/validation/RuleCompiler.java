@@ -3,6 +3,8 @@ package com.dataforge.validation;
 import com.dataforge.model.ProjectRules;
 import com.dataforge.model.TableMeta;
 
+import java.util.List;
+
 /**
  * 规则编译器（API_CONTRACT §3）：规则 → 检查 SQL。
  *
@@ -17,6 +19,10 @@ public interface RuleCompiler {
     /** 通用规则 → 检查 SQL（staging 库内扫描） */
     String compileMetaCheck(TableMeta table, MetaCheckType type, String stagingSchema);
 
-    /** 项目规则（后置修正节）→ 检查 SQL（金额对账等） */
-    String compileProjectRule(ProjectRules.Rule rule, TableMeta table, String stagingSchema);
+    /**
+     * 项目规则（后置修正节）→ 检查 SQL（金额对账等）。
+     *
+     * @param tables 全量表结构（可为 null：Web 试编译路径跳过表/列存在性，只做结构/语法校验）
+     */
+    String compileProjectRule(ProjectRules.Rule rule, List<TableMeta> tables, String stagingSchema);
 }

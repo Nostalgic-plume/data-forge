@@ -42,6 +42,7 @@ class AnalysisAgentTest {
             rows.add(col("orders", "user_id", "bigint", "MUL", "", "用户ID（引用 user.id）"));
             rows.add(col("orders", "total_amount", "decimal(10,2)", "", "", "订单原价总额（= 所有商品项小计之和）"));
             rows.add(col("orders", "status", "tinyint", "", "", "状态：0待支付 1已支付 2已发货 3已收货 4已完成"));
+            rows.add(col("orders", "logistics_no", "varchar(32)", "", "", "物流单号"));
             rows.add(col("order_item", "id", "bigint", "PRI", "", ""));
             rows.add(col("order_item", "order_id", "bigint", "MUL", "", "订单ID（引用 orders.id）"));
             rows.add(col("order_item", "subtotal", "decimal(10,2)", "", "", "小计 = 单价 × 数量"));
@@ -121,6 +122,22 @@ class AnalysisAgentTest {
         assertNotNull(statusPlan, "orders.status 应有列模式");
         assertEquals("weighted", statusPlan.mode(), "ENUM_WEIGHT 规则应落 plan 列模式");
         assertEquals("4:0.85", statusPlan.param("weights"), "状态权重参数应生效");
+    }
+
+    /** Mock extractRules logistics 启发式：表含 logistics_no + status → CUSTOM_SQL 进后置修正（可执行） */
+    @Test
+    void customSqlRoutedToCorrectionRules() {
+        SchemaReader schemaReader = new SchemaReader(new FakeJdbc());
+        DefaultAnalysisAgent agent = new DefaultAnalysisAgent(schemaReader, new MockLlmClient());
+        AnalysisAgent.AnalysisResult result = agent.analyze(
+                new AnalysisAgent.AnalysisRequest(null, "shop", List.of()));
+        assertTrue(result.rules().correctionRules().stream()
+                        .anyMatch(r -> r.type().equals("CUSTOM_SQL")
+                                && !r.params().getOrDefault("check_sql", "").isBlank()),
+                "CUSTOM_SQL 应被路由到 correctionRules（含 check_sql）");
+        assertTrue(result.rules().generationRules().stream()
+                        .noneMatch(r -> r.type().equals("CUSTOM_SQL")),
+                "CUSTOM_SQL 不应落入前置约束（generationRules）");
     }
 
     /** 分析结果可序列化为 ProjectRules（落盘 project_rules.json 供管线加载） */
