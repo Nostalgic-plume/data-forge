@@ -413,7 +413,7 @@ function renderRules() {
   }).join('') || '<div class="muted">无（先在第 2 步选表并分析）</div>';
 }
 function allRules() { return genRules.concat(corrRules); }
-function splitRules(nr) { genRules = nr.filter(r => r.type !== 'AGG_EQUAL'); corrRules = nr.filter(r => r.type === 'AGG_EQUAL'); }
+function splitRules(nr) { genRules = nr.filter(r => r.type !== 'AGG_EQUAL' && r.type !== 'CUSTOM_SQL'); corrRules = nr.filter(r => r.type === 'AGG_EQUAL' || r.type === 'CUSTOM_SQL'); }
 function chat(msg) {
   const d = document.createElement('div');
   d.className = 'msg ' + (msg.role === 'user' ? 'user' : 'ai');

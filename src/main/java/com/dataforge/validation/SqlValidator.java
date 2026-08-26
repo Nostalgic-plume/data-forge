@@ -107,7 +107,7 @@ public class SqlValidator {
                     .filter(t -> t.name().equals(rule.table())).findFirst().orElse(null);
             if (table == null) continue;   // 该表不在生成集内 → 跳过（不误报）
             try {
-                String sql = ruleCompiler.compileProjectRule(rule, table, staging);
+                String sql = ruleCompiler.compileProjectRule(rule, tables, staging);
                 List<Map<String, Object>> rows = jdbc.query(sql);
                 if (rows.isEmpty()) continue;
                 long totalRows = tableRowCount(staging, rule.table());

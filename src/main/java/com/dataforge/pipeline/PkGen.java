@@ -30,7 +30,9 @@ public final class PkGen {
         for (TableMeta table : context.tables()) {
             String name = table.name();
             if (com.dataforge.expansion.FixedSamples.isFixed(name)) {
-                log.info("PK 骨架: `{}` 跳过（固定样本表，行自带固定 id）", name);
+                // 固定表：骨架用 FixedSamples 固定 id 池（FkAlloc 引用需与固定行 id 一致，
+                // 通用化后固定表也可能被分析判为 source 走 LLM 分支，仍须有 id 骨架）
+                generateFixedPkSkeleton(table, context);
                 continue;
             }
             int count = context.rowCount(name);
@@ -49,6 +51,28 @@ public final class PkGen {
             log.info("PK 骨架: `{}` → {} 行, 策略={}, 起始ID={}, PK列={}",
                     name, count, strategy, startId, pkMap.keySet());
         }
+    }
+
+    /** 固定表骨架：用 FixedSamples 固定行的 id 池（FkAlloc 引用需与固定行 id 一致） */
+    private static void generateFixedPkSkeleton(TableMeta table, PipelineContext context) {
+        List<ColumnDef> pkCols = table.columns().stream()
+                .filter(ColumnDef::primaryKey).toList();
+        Map<String, List<Object>> pkMap = new LinkedHashMap<>();
+        if (!pkCols.isEmpty()) {
+            List<Map<String, Object>> fixedRows = com.dataforge.expansion.FixedSamples.rows(
+                    table.name(), table.columns(), context.newRandom());
+            for (ColumnDef pk : pkCols) {
+                List<Object> values = fixedRows.stream()
+                        .map(r -> r.get(pk.name())).filter(Objects::nonNull).toList();
+                pkMap.put(pk.name(), values);
+            }
+        }
+        synchronized (context.pkSkeletons()) {
+            context.pkSkeletons().put(table.name(), pkMap);
+        }
+        log.info("PK 骨架: `{}` 固定表 → {} 行（固定 id 池: {}）", table.name(),
+                pkMap.values().stream().findFirst().map(List::size).orElse(0),
+                pkCols.isEmpty() ? List.of() : pkMap.get(pkCols.get(0).name()));
     }
 
     /** 为一张表生成 PK 骨架（仅 PK 列）。无 PK 的表返回空映射。 */

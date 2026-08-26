@@ -14,7 +14,7 @@ import com.dataforge.validation.SqlValidator;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
 
-import java.nio.file.Path;
+import java.nio.charset.StandardCharsets;
 import java.util.*;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.function.Supplier;
@@ -27,15 +27,23 @@ import static org.junit.jupiter.api.Assertions.*;
  */
 class CorrectionPipelineTest {
 
-    private static final String SHOP_DDL = "d:/claudecode/shop/docs/data-gen/schema_for_tool.sql";
+    /** shop 18 表 DDL（测试资源，自包含不依赖外部仓库） */
+    private static final String SHOP_DDL = "schema/shop_schema.sql";
     private static TableMeta user, orders, orderItem;
 
     @BeforeAll
     static void parseShopDdl() throws Exception {
-        List<TableMeta> tables = new DdlParser().parse(Path.of(SHOP_DDL)).tables();
+        List<TableMeta> tables = new DdlParser().parse(readShopDdl()).tables();
         user = tables.stream().filter(t -> t.name().equals("user")).findFirst().orElseThrow();
         orders = tables.stream().filter(t -> t.name().equals("orders")).findFirst().orElseThrow();
         orderItem = tables.stream().filter(t -> t.name().equals("order_item")).findFirst().orElseThrow();
+    }
+
+    private static String readShopDdl() throws Exception {
+        try (var in = CorrectionPipelineTest.class.getResourceAsStream("/" + SHOP_DDL)) {
+            if (in == null) throw new IllegalStateException("测试资源缺失: " + SHOP_DDL);
+            return new String(in.readAllBytes(), StandardCharsets.UTF_8);
+        }
     }
 
     /** 状态化 mock JDBC：金额检查时记录当前已落库表集合（验证依赖图） */

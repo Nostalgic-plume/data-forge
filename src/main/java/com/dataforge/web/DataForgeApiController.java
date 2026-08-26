@@ -160,9 +160,11 @@ public class DataForgeApiController {
         try {
             ProjectRules existing = currentRules();
             List<ProjectRules.Rule> correction = refined.stream()
-                    .filter(r -> "AGG_EQUAL".equals(r.type()) || "STATUS_FLOW".equals(r.type())).toList();
+                    .filter(r -> "AGG_EQUAL".equals(r.type()) || "STATUS_FLOW".equals(r.type())
+                            || "CUSTOM_SQL".equals(r.type())).toList();
             List<ProjectRules.Rule> generation = refined.stream()
-                    .filter(r -> !"AGG_EQUAL".equals(r.type()) && !"STATUS_FLOW".equals(r.type())).toList();
+                    .filter(r -> !"AGG_EQUAL".equals(r.type()) && !"STATUS_FLOW".equals(r.type())
+                            && !"CUSTOM_SQL".equals(r.type())).toList();
             ProjectRules updated = new ProjectRules(generation, correction,
                     existing.builders(), existing.version() + 1);
             objectMapper.writerWithDefaultPrettyPrinter()

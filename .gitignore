@@ -15,6 +15,9 @@ docs/*_REDESIGN.md
 # 运行历史（Web 功能产物，不入库）
 history/
 
+# 运行报告（可观测性产物，不入库）
+run-reports/
+
 # Maven
 target/
 *.class

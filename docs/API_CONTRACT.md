@@ -356,12 +356,17 @@ record ProjectRules(
 
 record Rule(
     String table, String column,
-    String type,                   // AGG_EQUAL / ENUM_WEIGHT / VALUE_RANGE / FORMULA / STATUS_FLOW ...
+    String type,                   // AGG_EQUAL / ENUM_WEIGHT / VALUE_RANGE / FORMULA / STATUS_FLOW / CUSTOM_SQL ...
     String expression,             // 规则描述（人类可读，喂修正 agent 作 rootCause）
     double confidence,             // 分析 agent 置信度（低置信度优先人工确认）
     Source source,                 // AGENT / USER_CONFIRMED / USER_OVERRIDE
     Map<String, String> params     // P4 结构化参数（AGG_EQUAL: ref_table/sum_col/join_col）
 ) {}
+
+// CUSTOM_SQL（自定义校验，LLM 产 SQL，过 SqlGate 结构闸门后执行）：
+//   params: check_sql（只读 SELECT，表名用 {schema} 占位符，结果必须含目标表 id 列）
+//           fix_sql（可选修复 UPDATE：UPDATE {schema}.表 SET ... WHERE id = {id}，id 锚定防全表）
+//           fix_column（修正目标列，默认 rule.column()）
 
 // AGG_EQUAL（聚合相等）：target.column = SUM(ref_table.sum_col GROUP BY ref_table.join_col 对 target.id)
 //   引擎按 type 编译检查/修正 SQL，业务参数全走 params，不写死表名（P4 通用化）
@@ -438,8 +443,9 @@ public interface Validator {
 public interface RuleCompiler {
     /** 通用规则：从 DDL 元数据推导（FK 悬挂 JOIN / 唯一 GROUP BY / 非空 / 格式） */
     String compileMetaCheck(TableMeta table, MetaCheckType type);
-    /** 项目规则：从 correctionRules 编译（金额对账 / 状态联动 / 快照一致） */
-    String compileProjectRule(Rule rule, TableMeta table);
+    /** 项目规则：从 correctionRules 编译（金额对账 / 状态联动 / 自定义 SQL）
+     *  @param tables 全量表结构（可为 null：Web 试编译跳过表/列存在性，只做结构/语法校验） */
+    String compileProjectRule(Rule rule, List<TableMeta> tables, String stagingSchema);
 }
 ```
 
@@ -454,6 +460,10 @@ public interface RuleCompiler {
 //   NON_NULL     → params: default_value（可选，补值；缺省按列类型推导 0 / 'N/A'）
 //   FORMAT       → params: regex（列值 NOT REGEXP regex 即问题）
 //   STATUS_FLOW  → params: flow（逗号分隔 ≥2 时间列）/ trigger_status（可选）/ trigger_status_col（默认 status）
+//   CUSTOM_SQL   → params: check_sql（只读 SELECT，{schema} 占位符，结果含 id）/ fix_sql（可选修复
+//                  UPDATE：UPDATE {schema}.表 SET ... WHERE id = {id}，id 锚定）/ fix_column
+//                  —— LLM 产 SQL，过 SqlGate（Druid 双模式闸门：语法/SELECT-only/UPDATE-only/危险函数/
+//                     表列存在性/id 锚定）后执行；修正侧走 fix_sql 参数化逐行，缺失则上报残留
 
 // 参数结构校验（编译前，错参数拒绝 + 上报，不静默）：
 void validateParams(Rule rule, TableMeta table);   // 表/列存在、min≤max、regex/flow 存在

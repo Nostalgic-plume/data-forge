@@ -7,6 +7,7 @@ import com.dataforge.model.TableMeta;
 import org.springframework.stereotype.Component;
 
 import java.util.Arrays;
+import java.util.List;
 import java.util.stream.Collectors;
 
 /**
@@ -48,19 +49,28 @@ public class MetaRuleCompiler implements RuleCompiler {
         return sb.toString();
     }
 
-    /** 唯一键冲突：按唯一列组 GROUP BY，出现 >1 次即冲突 */
+    /** 唯一键冲突：按唯一列组 GROUP BY，出现 >1 次即冲突。多组列数不一致时补 NULL 对齐（UNION 各段列数必须一致） */
     private String compileUniqueConflict(TableMeta table, String staging, String tableQ) {
+        var groups = table.uniqueKeys().stream()
+                .map(g -> g.split(","))
+                .map(a -> Arrays.stream(a).map(String::trim).toArray(String[]::new))
+                .toList();
+        if (groups.isEmpty()) return "SELECT NULL AS `cnt` WHERE 1=0";
+        int maxCols = groups.stream().mapToInt(a -> a.length).max().orElse(1);
         StringBuilder sb = new StringBuilder();
-        for (String ukGroup : table.uniqueKeys()) {
-            String cols = Arrays.stream(ukGroup.split(",")).map(String::trim)
-                    .map(MysqlJdbcDataSource::quote).collect(Collectors.joining(", "));
-            sb.append("SELECT ").append(cols).append(", COUNT(*) AS `cnt`\n")
+        for (String[] group : groups) {
+            String cols = Arrays.stream(group).map(MysqlJdbcDataSource::quote)
+                    .collect(Collectors.joining(", "));
+            StringBuilder padded = new StringBuilder(cols);
+            for (int i = group.length; i < maxCols; i++) {
+                padded.append(", NULL");
+            }
+            sb.append("SELECT ").append(padded).append(", COUNT(*) AS `cnt`\n")
                     .append("FROM ").append(staging).append('.').append(tableQ).append("\n")
                     .append("GROUP BY ").append(cols).append("\n")
                     .append("HAVING COUNT(*) > 1\n")
                     .append("UNION ALL\n");
         }
-        if (sb.length() == 0) return "SELECT NULL AS `cnt` WHERE 1=0";
         sb.setLength(sb.length() - "UNION ALL\n".length());
         return sb.toString();
     }
@@ -68,9 +78,12 @@ public class MetaRuleCompiler implements RuleCompiler {
     /**
      * 项目规则编译（P4 通用化：引擎按 type 编译，业务参数全部来自 rule.params，不写死表名）。
      * AGG_EQUAL：target.column = SUM(ref_table.sum_col GROUP BY ref_table.join_col 对 target.id)。
+     * CUSTOM_SQL：LLM 产出校验 SQL，过结构闸门（SqlGate）后作为检查 SQL（tables 可为 null）。
      */
     @Override
-    public String compileProjectRule(ProjectRules.Rule rule, TableMeta table, String stagingSchema) {
+    public String compileProjectRule(ProjectRules.Rule rule, List<TableMeta> tables, String stagingSchema) {
+        TableMeta table = tables == null ? null : tables.stream()
+                .filter(t -> t.name().equals(rule.table())).findFirst().orElse(null);
         String staging = MysqlJdbcDataSource.quote(stagingSchema);
         validateParams(rule, table);   // 编译前参数结构校验（错参数拒绝 + 上报，不静默）
         return switch (rule.type()) {
@@ -79,6 +92,7 @@ public class MetaRuleCompiler implements RuleCompiler {
             case "NON_NULL" -> compileNonNull(rule, staging);
             case "FORMAT" -> compileFormat(rule, staging);
             case "STATUS_FLOW" -> compileStatusFlow(rule, staging);
+            case "CUSTOM_SQL" -> compileCustomSql(rule, table, tables, stagingSchema);
             default -> throw new UnsupportedOperationException(
                     "暂不支持该项目规则类型: " + rule.type() + " / " + rule.expression());
         };
@@ -127,6 +141,19 @@ public class MetaRuleCompiler implements RuleCompiler {
                             throw new IllegalStateException(
                                     "STATUS_FLOW 时间列 `" + col + "` 不存在于表 `" + rule.table() + "`");
                         }
+                    }
+                }
+            }
+            case "CUSTOM_SQL" -> {
+                String checkSql = rule.params().get("check_sql");
+                if (checkSql == null || checkSql.isBlank()) {
+                    throw new IllegalStateException("CUSTOM_SQL 规则缺少参数 check_sql");
+                }
+                if (table != null) {
+                    String fixCol = rule.params().getOrDefault("fix_column", rule.column());
+                    if (table.columns().stream().noneMatch(c -> c.name().equals(fixCol))) {
+                        throw new IllegalStateException(
+                                "CUSTOM_SQL 修正列 `" + fixCol + "` 不存在于表 `" + rule.table() + "`");
                     }
                 }
             }
@@ -191,6 +218,7 @@ public class MetaRuleCompiler implements RuleCompiler {
         StringBuilder conditions = new StringBuilder();
         for (int i = 0; i < cols.length; i++) {
             String c = cols[i].trim();
+            if (i > 0) conditions.append(" OR ");
             conditions.append("`").append(c).append("` IS NULL");
             if (i < cols.length - 1) {
                 conditions.append(" OR `").append(c).append("` >= `").append(cols[i + 1].trim()).append("`");
@@ -204,6 +232,25 @@ public class MetaRuleCompiler implements RuleCompiler {
             where = "`" + tc + "` = " + trigger + " AND " + where;
         }
         return "SELECT `id` FROM " + staging + "." + MysqlJdbcDataSource.quote(rule.table()) + " WHERE " + where;
+    }
+
+    /**
+     * CUSTOM_SQL 编译：LLM 产出的校验 SQL 过结构闸门（SqlGate）后作为检查 SQL。
+     * 表名用 {@code {schema}} 占位符，编译时替换为 quote(staging)（防裸表名/跨库越界）。
+     * fix_sql（修复 UPDATE）同过闸门但由修正侧消费——此处编译期拒绝坏 fix（Web 试编译可见）。
+     */
+    private String compileCustomSql(ProjectRules.Rule rule, TableMeta table,
+                                    List<TableMeta> tables, String stagingSchema) {
+        String checkSql = rule.params().get("check_sql");
+        if (checkSql == null || checkSql.isBlank()) {
+            throw new IllegalStateException("CUSTOM_SQL 规则缺少参数 check_sql");
+        }
+        String compiled = SqlGate.compileCheckSql(checkSql, stagingSchema, table, tables);
+        String fixSql = rule.params().get("fix_sql");
+        if (fixSql != null && !fixSql.isBlank()) {
+            SqlGate.compileFixSql(fixSql, stagingSchema, table);
+        }
+        return compiled;
     }
 
     private static Double parseDouble(String s) {

@@ -107,13 +107,15 @@ public class DefaultAnalysisAgent implements AnalysisAgent {
     // ---- project_rules 母版组装 ----
 
     private ProjectRules buildProjectRules(List<ProjectRules.Rule> rules, GenerationPlan plan) {
-        // 后置修正规则（校验/修正类）：金额对账 + 状态联动
+        // 后置修正规则（校验/修正类）：金额对账 + 状态联动 + 自定义 SQL（LLM 产 check/fix SQL）
         List<ProjectRules.Rule> correction = rules.stream()
-                .filter(r -> "AGG_EQUAL".equals(r.type()) || "STATUS_FLOW".equals(r.type()))
+                .filter(r -> "AGG_EQUAL".equals(r.type()) || "STATUS_FLOW".equals(r.type())
+                        || "CUSTOM_SQL".equals(r.type()))
                 .toList();
         // 前置约束（生成约束）：权重/范围等
         List<ProjectRules.Rule> generation = rules.stream()
-                .filter(r -> !"AGG_EQUAL".equals(r.type()) && !"STATUS_FLOW".equals(r.type()))
+                .filter(r -> !"AGG_EQUAL".equals(r.type()) && !"STATUS_FLOW".equals(r.type())
+                        && !"CUSTOM_SQL".equals(r.type()))
                 .toList();
         // 行构建器覆盖所有派生表（从 plan：derived 表 → BuilderDef，锚点 = 父表）
         List<ProjectRules.BuilderDef> builders = plan.tables().stream()
