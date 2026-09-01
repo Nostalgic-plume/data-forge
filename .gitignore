@@ -11,6 +11,7 @@ docs/INTERVIEW.md
 
 # 内部设计草稿（非定稿，不入库）
 docs/*_REDESIGN.md
+docs/archive/
 
 # 运行历史（Web 功能产物，不入库）
 history/
