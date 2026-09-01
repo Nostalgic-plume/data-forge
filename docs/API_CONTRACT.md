@@ -239,7 +239,7 @@ P1 版在此基础升级（✅ 已落地 2026-08-12）：
   ⑥ 前插入：展开器（ExpansionEngine + Expander 接口，规格蓝图×锚点→全量，零 LLM）
             —— LLM 只产 3 张语义源表样本（category/user/product），其余 9 表全规则派生
             —— 落地：Sku/Orders/OrderItem/Address/Cart/UserRole/Shop 7 个 Expander + FixedSamples(role/admin)
-  保留"纯 LLM 全量"作为展开器失败时的 fallback（CLI --no-expansion 切回）
+  生成恒走两阶段（LLM 语义样本 + 确定性展开器），无纯 LLM fallback
 ```
 
 ### 1.3 CorrectionAgent（修正 agent，P3 核心）

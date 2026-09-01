@@ -6,8 +6,6 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.ai.chat.client.ChatClient;
-import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
-import org.springframework.stereotype.Service;
 
 import java.util.List;
 import java.util.Map;
@@ -21,8 +19,6 @@ import java.util.Map;
  *
  * <p>凭证：.env（LLM_API_KEY / LLM_BASE_URL / LLM_MODEL），未配置时抛中文错误提示。</p>
  */
-@Service
-@ConditionalOnProperty(name = "dataforge.mock-llm", havingValue = "false", matchIfMissing = true)
 public class RealLlmClient implements DataLlm {
 
     private static final Logger log = LoggerFactory.getLogger(RealLlmClient.class);
@@ -63,8 +59,8 @@ public class RealLlmClient implements DataLlm {
     private final ChatClient chatClient;
     private final ObjectMapper objectMapper = new ObjectMapper();
 
-    public RealLlmClient(ChatClient.Builder builder) {
-        this.chatClient = builder.build();
+    public RealLlmClient(ChatClient chatClient) {
+        this.chatClient = chatClient;
         verifyApiKeyConfigured();
     }
 

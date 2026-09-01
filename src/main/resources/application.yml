@@ -1,9 +1,9 @@
 spring:
   application:
     name: dataforge
-  # CLI 模式：不启动 web 服务器（Spring AI starter 自带 reactive 依赖）
+  # Web 模式：启动 Web 服务器（REST + 静态前端），DataForge 唯一入口
   main:
-    web-application-type: none
+    web-application-type: servlet
   # 确定性 JDBC 通道（校验/修正/staging，凭证走 .env 环境变量注入）
   datasource:
     url: jdbc:mysql://${DB_HOST:localhost}:${DB_PORT:3306}/?useSSL=false&serverTimezone=Asia/Shanghai&rewriteBatchedStatements=true&useUnicode=true&characterEncoding=utf8&allowPublicKeyRetrieval=true

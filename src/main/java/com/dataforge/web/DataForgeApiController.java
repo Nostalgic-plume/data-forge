@@ -11,6 +11,10 @@ import com.dataforge.db.SchemaReader;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.dataforge.llm.DataLlm;
 import com.dataforge.model.*;
+import com.dataforge.service.GenerationSupport;
+import com.dataforge.service.IncrementalSupport;
+import com.dataforge.service.RealTableReader;
+import com.dataforge.service.RulesService;
 import com.dataforge.validation.MetaRuleCompiler;
 import com.dataforge.validation.Scorer;
 import com.dataforge.validation.SqlValidator;
@@ -41,11 +45,13 @@ public class DataForgeApiController {
     private final GeneratorProperties props;
     private final HistoryService history;
     private final Publisher publisher;
+    private final RulesService rulesService;
     private final ObjectMapper objectMapper = new ObjectMapper();
 
     public DataForgeApiController(DefaultAnalysisAgent analysisAgent, DefaultGenerationAgent generationAgent,
                                   DataLlm llm, Scorer scorer,
-                                  GeneratorProperties props, HistoryService history, Publisher publisher) {
+                                  GeneratorProperties props, HistoryService history, Publisher publisher,
+                                  RulesService rulesService) {
         this.analysisAgent = analysisAgent;
         this.generationAgent = generationAgent;
         this.llm = llm;
@@ -53,6 +59,7 @@ public class DataForgeApiController {
         this.props = props;
         this.history = history;
         this.publisher = publisher;
+        this.rulesService = rulesService;
     }
 
     /** 每请求动态连接会话（Web 前端配置数据库连接） */
@@ -158,7 +165,7 @@ public class DataForgeApiController {
         // 落盘闭环（修 D1 断链）：修订后写回 project_rules.json，与 analyze 分流一致
         //   （AGG_EQUAL/STATUS_FLOW → correctionRules；其余 → generationRules；builders/version 沿用）
         try {
-            ProjectRules existing = currentRules();
+            ProjectRules existing = rulesService.currentRules();
             List<ProjectRules.Rule> correction = refined.stream()
                     .filter(r -> "AGG_EQUAL".equals(r.type()) || "STATUS_FLOW".equals(r.type())
                             || "CUSTOM_SQL".equals(r.type())).toList();
@@ -306,19 +313,6 @@ public class DataForgeApiController {
         return resp;
     }
 
-    /** 当前生效规则：优先已保存的 project_rules.json，否则内置默认 */
-    private ProjectRules currentRules() {
-        try {
-            java.nio.file.Path pf = java.nio.file.Path.of("project_rules.json");
-            if (java.nio.file.Files.exists(pf)) {
-                return objectMapper.readValue(pf.toFile(), ProjectRules.class);
-            }
-        } catch (Exception e) {
-            log.warn("project_rules.json 读取失败（回退内置默认）: {}", e.getMessage());
-        }
-        return ProjectRules.withDefaultCorrectionRules();
-    }
-
     // ---- ③ 生成（逐表行数 → 配置驱动生成 → 落库） ----
 
     @PostMapping("/generate")
@@ -333,35 +327,25 @@ public class DataForgeApiController {
         }
         List<TableMeta> tables = s.schemaReader.readTables(schema);
 
-        // 闭包：指定表 + FK 父表（未指定用推荐行数）
-        Map<String, TableMeta> byName = tables.stream().collect(Collectors.toMap(TableMeta::name, t -> t));
-        Set<String> closure = new LinkedHashSet<>(rows.keySet());
-        Deque<String> queue = new ArrayDeque<>(rows.keySet());
-        while (!queue.isEmpty()) {
-            TableMeta meta = byName.get(queue.poll());
-            if (meta == null) continue;
-            for (var fk : meta.foreignKeys()) {
-                if (byName.containsKey(fk.refTable()) && closure.add(fk.refTable())) queue.add(fk.refTable());
-            }
-        }
-        Map<String, Integer> rowCounts = new LinkedHashMap<>();
-        for (String t : closure) rowCounts.put(t, rows.getOrDefault(t, 10));
-        List<TableMeta> genTables = tables.stream().filter(t -> closure.contains(t.name())).toList();
+        // 闭包：指定表 + FK 父表（未指定用 minParentRows 缺省）
+        GenerationSupport.Closure closure = GenerationSupport.referenceClosure(tables, rows, props.minParentRows());
+        Map<String, Integer> rowCounts = closure.rowCounts();
+        List<TableMeta> genTables = tables.stream().filter(t -> closure.tables().contains(t.name())).toList();
 
         // 配置驱动：分析产出生成计划 → 设到生成 agent
         AnalysisAgent.AnalysisResult analyzed = analysisAgent.analyzeTables(genTables);
         generationAgent.setPlan(analyzed.plan());
 
         GenerationAgent.GenerationResult result = generationAgent.generate(
-                new GenerationAgent.GenerationRequest(genTables, currentRules(), rowCounts,
+                new GenerationAgent.GenerationRequest(genTables, rulesService.currentRules(), rowCounts,
                         IncrementalConfig.full(), props.seed(), props.batchSize(), props.maxConcurrency()),
-                false, true);
+                false);
         // 动态落库 + 校验
         s.staging.drop(schema);
         s.staging.create(schema, genTables);
         s.staging.load(schema, result.data());
         ValidationReport report = s.validator.validate(genTables,
-                currentRules(), schema);
+                rulesService.currentRules(), schema);
 
         Map<String, Object> resp = new LinkedHashMap<>();
         resp.put("schema", schema);
@@ -371,6 +355,91 @@ public class DataForgeApiController {
         resp.put("validation", report.totalErrors());
         history.record("generate", Map.of("schema", schema, "rows",
                 result.actualCounts().values().stream().mapToInt(Integer::intValue).sum()));
+        return resp;
+    }
+
+    // ---- ③.5 增量生成（追加不冲突不误伤：起始 ID=MAX+1 + 现有池引用 + 作用域修正） ----
+
+    @PostMapping("/incremental")
+    public Map<String, Object> incremental(@RequestBody Map<String, Object> req) throws Exception {
+        long start = System.currentTimeMillis();
+        Session s = new Session(toStringMap(req));
+        String schema = orDefault(toStringMap(req).get("dbSchema"), "shop");
+        @SuppressWarnings("unchecked")
+        Map<String, Integer> rows = (Map<String, Integer>) req.getOrDefault("rows", Map.of());
+        if (rows.isEmpty()) {
+            return Map.of("error", "请先在表清单中设置行数");
+        }
+        int minParentRows = req.get("minParentRows") instanceof Number n
+                ? n.intValue() : props.minParentRows();
+        boolean cacheEnabled = Boolean.TRUE.equals(req.get("cacheEnabled"));
+        boolean replan = !Boolean.FALSE.equals(req.get("replan"));
+
+        List<TableMeta> allTables = s.schemaReader.readTables(schema);
+        // 闭包：增量只生成用户显式指定的表（父表 rowCount=0 → 引用现有 staging）
+        GenerationSupport.Closure closure = GenerationSupport.referenceClosure(allTables, rows, minParentRows);
+        List<TableMeta> genTables = allTables.stream()
+                .filter(t -> closure.tables().contains(t.name())).toList();
+
+        // baseline：现有 staging 数据（FK 池 / 展开器引用；空则退化为全量）
+        Map<String, GeneratedData> baseline = s.staging.read(schema, genTables);
+        boolean baselineEmpty = baseline.values().stream().allMatch(g -> g.rowCount() == 0);
+
+        // 生成计划（配置驱动，复用 /generate 逻辑）
+        if (replan) {
+            AnalysisAgent.AnalysisResult analyzed = analysisAgent.analyzeTables(genTables);
+            generationAgent.setPlan(analyzed.plan());
+        }
+
+        ProjectRules rules = rulesService.currentRules();
+        // 增量生成：只生成用户显式表行数，父表 rowCount=0 → 引用现有（generateIncremental 内部处理）
+        GenerationAgent.GenerationRequest incReq = new GenerationAgent.GenerationRequest(
+                genTables, rules, new LinkedHashMap<>(rows), IncrementalConfig.full(),
+                props.seed(), props.batchSize(), props.maxConcurrency());
+        GenerationAgent.GenerationResult result =
+                generationAgent.generateIncremental(incReq, baseline, cacheEnabled);
+
+        // 重建 staging 完整快照（result.data() 已含现有+新增，直接 drop→create→load）
+        s.staging.drop(schema);
+        s.staging.create(schema, genTables);
+        s.staging.load(schema, result.data());
+
+        // 跨现有校验 + 作用域修正（scopeMinId = 各表现有 MAX(id)+1 的最小值，只动新增区间）
+        ValidationReport initial = s.validator.validate(genTables, rules, schema);
+        Long scopeMinId = IncrementalSupport.scopeMinIdOf(baseline);
+        boolean converged = true;
+        int iterations = 0;
+        int fixCount = 0;
+        int finalErrors = initial.totalErrors();
+        boolean rolledBack = false;
+        if (initial.totalErrors() > 0) {
+            CorrectionEngine engine = new CorrectionEngine(s.jdbc, s.staging, s.validator, llm);
+            CorrectionAgent.CorrectionResult fix = engine.run(new CorrectionAgent.CorrectionRequest(
+                    genTables, result.data(), initial, rules, schema, scopeMinId),
+                    props.maxIterations());
+            converged = fix.converged();
+            iterations = fix.iterations();
+            fixCount = fix.appliedFixes().size();
+            finalErrors = fix.finalReport().totalErrors();
+            rolledBack = fix.rolledBack();
+        }
+
+        Map<String, Object> resp = new LinkedHashMap<>();
+        resp.put("schema", schema);
+        resp.put("baselineEmpty", baselineEmpty);
+        resp.put("scopeMinId", scopeMinId);
+        resp.put("actualCounts", result.actualCounts());
+        resp.put("failedTables", result.failedTables());
+        resp.put("validationInitialErrors", initial.totalErrors());
+        resp.put("converged", converged);
+        resp.put("iterations", iterations);
+        resp.put("fixCount", fixCount);
+        resp.put("finalErrors", finalErrors);
+        resp.put("rolledBack", rolledBack);
+        resp.put("elapsedMs", System.currentTimeMillis() - start);
+        history.record("incremental", Map.of("schema", schema,
+                "rows", result.actualCounts().values().stream().mapToInt(Integer::intValue).sum(),
+                "baselineEmpty", baselineEmpty));
         return resp;
     }
 
@@ -385,10 +454,10 @@ public class DataForgeApiController {
         Map<String, GeneratedData> data = s.staging.read(schema, allTables);
         List<TableMeta> tables = allTables.stream().filter(t -> data.containsKey(t.name())).toList();
         ValidationReport initial = s.validator.validate(tables,
-                currentRules(), schema);
+                rulesService.currentRules(), schema);
         CorrectionEngine engine = new CorrectionEngine(s.jdbc, s.staging, s.validator, llm);
         CorrectionAgent.CorrectionResult fix = engine.run(new CorrectionAgent.CorrectionRequest(
-                tables, data, initial, currentRules(), schema, null),
+                tables, data, initial, rulesService.currentRules(), schema, null),
                 props.maxIterations());
         Map<String, Object> resp = new LinkedHashMap<>();
         resp.put("schema", schema);
@@ -412,7 +481,7 @@ public class DataForgeApiController {
         List<TableMeta> allTables = s.schemaReader.readTables(schema);
         Map<String, GeneratedData> generated = s.staging.read(schema, allTables);
         List<TableMeta> tables = allTables.stream().filter(t -> generated.containsKey(t.name())).toList();
-        Scorer.ScoreReport report = scorer.score(generated, readRealTables(s.jdbc, schema, tables));
+        Scorer.ScoreReport report = scorer.score(generated, RealTableReader.read(s.jdbc, schema, tables));
         Map<String, Object> resp = new LinkedHashMap<>();
         resp.put("schema", schema);
         resp.put("overall", report.overall());
@@ -504,22 +573,6 @@ public class DataForgeApiController {
     }
 
     // ---- 工具 ----
-
-    private Map<String, GeneratedData> readRealTables(MysqlJdbcDataSource jdbc, String schema,
-                                                      List<TableMeta> tables) {
-        Map<String, GeneratedData> real = new LinkedHashMap<>();
-        for (TableMeta t : tables) {
-            List<Map<String, Object>> rows = jdbc.query(
-                    "SELECT * FROM `" + schema + "`.`" + t.name() + "`");
-            List<DataRow> dataRows = rows.stream().map(r -> {
-                Map<String, SourceTag> lineage = new LinkedHashMap<>();
-                for (ColumnDef c : t.columns()) lineage.put(c.name(), SourceTag.SEED);
-                return new DataRow(new LinkedHashMap<>(r), lineage);
-            }).toList();
-            real.put(t.name(), new GeneratedData(t.name(), t.columns(), dataRows));
-        }
-        return real;
-    }
 
     @SuppressWarnings("unchecked")
     private static Map<String, String> toStringMap(Map<String, Object> req) {

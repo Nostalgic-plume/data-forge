@@ -36,33 +36,22 @@ DataForge 是一款基于 LLM 的智能数据生成平台。传统 Faker 工具�
    mvn package
    ```
 
-#### 使用说明
+#### 使用说明（Web 界面，唯一入口）
 
-**1. 分析业务规则（可选，产出 project_rules.json + generation-plan.json）**
+**启动 Web 服务：**
 ```bash
-java -jar target/dataforge-0.1.0-SNAPSHOT.jar --analyze shop --ddl docs/schema.sql
+java -jar target/dataforge-0.1.0-SNAPSHOT.jar              # 真实 LLM（需 .env 配 LLM_API_KEY）
+java -jar target/dataforge-0.1.0-SNAPSHOT.jar --mock-llm   # 干跑模式（确定性 Mock，无需 API Key）
+java -jar ... --server.port=8099                            # 指定端口（默认 8080）
 ```
 
-**2. 生成数据（mock 干跑，确定性、无需真实 LLM）**
-```bash
-java -jar target/dataforge-0.1.0-SNAPSHOT.jar --mock-llm --ddl docs/schema.sql \
-  --rows user=20,product=20,sku=80,orders=100
-```
+浏览器打开 http://localhost:8080，按**五步向导**操作：
 
-**3. 生成 + 落库 + SQL 校验**
-```bash
-java -jar ... --mock-llm --ddl docs/schema.sql --rows ... --staging shop
-```
+1. **连接配置**：填数据库连接（主机/端口/用户/密码/库名），测试连接 + 库名下框
+2. **选择表**：勾选要生成的表，设置每表行数（可 LLM 推荐）
+3. **分析规则**：LLM 提炼三段规则 + 生成计划（可对话修订 + 试编译）
+4. **生成**：选"全量重建 / 增量追加" → 生成 → 自动校验修正 → 预览（血缘）
+5. **评分 + 发布**：软评分 → 按保留策略发布目标库 → 导出 SQL → 历史记录
 
-**4. 生成 + 落库 + 校验 + 修正收敛（完整流程）**
-```bash
-java -jar ... --ddl docs/schema.sql --rows ... --staging shop --correct
-```
-
-**5. Web 界面**
-```bash
-java -jar ... --mock-llm --web --port 8099
-```
-
-常用参数：`--seed` `--batch-size` `--max-concurrency` `--no-cache` `--incremental` `--score`
+**功能**：分析 / 全量生成 / 增量追加 / 校验修正（ReAct 收敛）/ 软评分 / 发布 / HITL 规则修订 / 历史 / 导出 SQL。
 

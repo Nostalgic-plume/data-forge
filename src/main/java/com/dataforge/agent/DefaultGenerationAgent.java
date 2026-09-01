@@ -31,17 +31,11 @@ public class DefaultGenerationAgent implements GenerationAgent {
     private final DataLlm llm;
     private final GeneratorProperties props;
     private final ExpansionEngine expansion;
-    private Map<String, GeneratedData> lastData = Map.of();
 
     public DefaultGenerationAgent(DataLlm llm, GeneratorProperties props, ExpansionEngine expansion) {
         this.llm = llm;
         this.props = props;
         this.expansion = expansion;
-    }
-
-    /** 最近一次生成的数据（CLI 落 staging 库用） */
-    public Map<String, GeneratedData> lastData() {
-        return lastData;
     }
 
     /** 设置生成计划（分析 agent 产出；空计划 = 内置模板 fallback，通用化配置驱动） */
@@ -65,21 +59,15 @@ public class DefaultGenerationAgent implements GenerationAgent {
 
     @Override
     public GenerationResult generate(GenerationRequest req) {
-        return generate(req, props.cacheDir() != null, true);
+        return generate(req, props.cacheDir() != null);
     }
 
-    /** CLI 调试重载：cacheEnabled=false 对应 --no-cache */
     public GenerationResult generate(GenerationRequest req, boolean cacheEnabled) {
-        return generate(req, cacheEnabled, true, null);
+        return generate(req, cacheEnabled, null);
     }
 
-    /** CLI 调试重载：expansionEnabled=false 对应 --no-expansion（P0 纯 LLM 全量） */
-    public GenerationResult generate(GenerationRequest req, boolean cacheEnabled, boolean expansionEnabled) {
-        return generate(req, cacheEnabled, expansionEnabled, null);
-    }
-
-    /** P4 流水线版：listener 非空时边生成边触发表完成事件（边落库边修正） */
-    public GenerationResult generate(GenerationRequest req, boolean cacheEnabled, boolean expansionEnabled,
+    /** P4 流水线版：listener 非空时边生成边触发表完成事件（边落库边修正）；生成恒走两阶段（LLM 语义样本 + 确定性展开器） */
+    public GenerationResult generate(GenerationRequest req, boolean cacheEnabled,
                                      com.dataforge.pipeline.TableCompletedListener listener) {
         long start = System.currentTimeMillis();
 
@@ -98,7 +86,7 @@ public class DefaultGenerationAgent implements GenerationAgent {
         GenerationCache cache = cacheEnabled && effective.cacheDir() != null
                 ? new GenerationCache(Path.of(effective.cacheDir())) : null;
         ContentGen.GenOutcome outcome = ContentGen.execute(context, llm, effective, cache,
-                expansionEnabled ? expansion : null, listener, null, req.rules());
+                expansion, listener, null, req.rules());
 
         Map<String, GeneratedData> data = outcome.results().entrySet().stream()
                 .collect(Collectors.toMap(Map.Entry::getKey, e -> e.getValue().data()));
@@ -113,8 +101,6 @@ public class DefaultGenerationAgent implements GenerationAgent {
                     context.rowCount(table), r.data().rowCount(), r.elapsedMs(),
                     r.llmBatches(), r.downshifts(), r.gapFills(), r.cacheHit()));
         });
-        this.lastData = data;
-
         return new GenerationResult(data, outcome.failedTables(),
                 System.currentTimeMillis() - start, actualCounts, tableStats);
     }
@@ -131,7 +117,7 @@ public class DefaultGenerationAgent implements GenerationAgent {
      */
     public GenerationResult generateIncremental(GenerationRequest req,
                                                 Map<String, GeneratedData> baseline,
-                                                boolean cacheEnabled, boolean expansionEnabled) {
+                                                boolean cacheEnabled) {
         long start = System.currentTimeMillis();
         GeneratorProperties effective = new GeneratorProperties(
                 props.mockLlm(), req.seed(), req.batchSize(), req.maxConcurrency(),
@@ -171,7 +157,7 @@ public class DefaultGenerationAgent implements GenerationAgent {
         Map<String, Map<String, List<Object>>> initialCompleted =
                 ContentGen.buildCompletedIndex(baseline);
         ContentGen.GenOutcome outcome = ContentGen.execute(context, llm, effective, cache,
-                expansionEnabled ? expansion : null, null, initialCompleted, req.rules());
+                expansion, null, initialCompleted, req.rules());
 
         // 结果 = 现有 baseline 拼接新增（同表现有行 + 新增行，现有行保留不被覆盖）
         Map<String, GeneratedData> data = new LinkedHashMap<>();
@@ -196,7 +182,6 @@ public class DefaultGenerationAgent implements GenerationAgent {
                     context.rowCount(table), r.data().rowCount(), r.elapsedMs(),
                     r.llmBatches(), r.downshifts(), r.gapFills(), r.cacheHit()));
         });
-        this.lastData = data;
         return new GenerationResult(data, outcome.failedTables(),
                 System.currentTimeMillis() - start, actualCounts, tableStats);
     }

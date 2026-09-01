@@ -105,7 +105,7 @@ class CorrectionPipelineTest {
                 new GeneratorProperties(false, 42L, 50, 4, "sequential", null, 5, 10), null) {
             @Override
             public GenerationAgent.GenerationResult generate(GenerationAgent.GenerationRequest req,
-                                                             boolean cacheEnabled, boolean expansionEnabled,
+                                                             boolean cacheEnabled,
                                                              TableCompletedListener listener) {
                 Map<String, GeneratedData> data = new LinkedHashMap<>();
                 data.put("user", new GeneratedData("user", user.columns(), List.of(
@@ -141,7 +141,7 @@ class CorrectionPipelineTest {
                         ProjectRules.withDefaultCorrectionRules(),
                         Map.of("user", 1, "orders", 1, "order_item", 1),
                         IncrementalConfig.full(), 42L, 50, 4),
-                false, true);
+                false);
 
         // 流水线结果（统计字段，验证修正确被触发）
         assertTrue(outcome.tablesFixed() >= 1, "流水线应修正过表");
