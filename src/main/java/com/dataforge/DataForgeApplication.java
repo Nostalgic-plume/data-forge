@@ -8,9 +8,9 @@ import org.springframework.boot.context.properties.ConfigurationPropertiesScan;
 import java.util.Arrays;
 
 /**
- * DataForge 启动类（CLI 模式）。
+ * DataForge 启动类（Web 模式）。
  *
- * <p>启动顺序：加载 .env → 解析 --mock-llm 参数（干跑模式）→ 启动容器。</p>
+ * <p>启动顺序：加载 .env → 解析 --mock-llm 参数（干跑模式）→ 启动 Web 容器（REST + 静态前端）。</p>
  *
  * <p>--mock-llm 重写为命令行属性 <code>--dataforge.mock-llm=true</code>：
  * 命令行属性优先级最高（高于 application.yml），保证 MockLlmClient 生效；
@@ -33,15 +33,13 @@ public class DataForgeApplication {
             System.out.println("[DataForge] --mock-llm 干跑模式：使用确定性 Mock LLM，无需 API Key");
         }
 
-        // 3. --web：P7 Web 模式 —— 启动 Web 服务器（REST + 静态前端），覆盖 yml 的 web-application-type: none
-        if (hasArg(args, "--web")) {
+        // 3. --port：Web 端口（默认 8080；也可直接用 --server.port）
+        if (hasArg(args, "--port")) {
             args = Arrays.copyOf(args, args.length + 2);
-            args[args.length - 2] = "--spring.main.web-application-type=servlet";
-            args[args.length - 1] = "--server.port=" + webPort(args);
-            System.out.println("[DataForge] --web 模式：启动 Web 界面（http://localhost:" + webPort(args) + "）");
+            args[args.length - 2] = "--server.port=" + webPort(args);
         }
 
-        // 4. 启动容器（CommandLineRunner = DataForgeCli；--web 时 CLI 跳过，跑 Web 服务）
+        // 4. 启动 Web 容器（application.yml web-application-type: servlet，DataForge 唯一入口）
         SpringApplication.run(DataForgeApplication.class, args);
     }
 

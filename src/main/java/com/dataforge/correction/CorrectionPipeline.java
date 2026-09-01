@@ -13,8 +13,6 @@ import com.dataforge.model.ValidationReport;
 import com.dataforge.validation.SqlValidator;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.springframework.stereotype.Component;
-
 import java.util.*;
 import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -29,7 +27,6 @@ import java.util.concurrent.atomic.AtomicInteger;
  *
  * <p>并行安全：表完成事件并发触发，修正任务按表去重（fixStarted），独立表并行修正。</p>
  */
-@Component
 public class CorrectionPipeline {
 
     private static final Logger log = LoggerFactory.getLogger(CorrectionPipeline.class);
@@ -72,7 +69,7 @@ public class CorrectionPipeline {
     /** 跑一次流水线：生成（边落库）→ 修正（依赖图触发）→ 读回最终数据 */
     public PipelineOutcome run(String schemaName, List<TableMeta> tables, ProjectRules rules,
                                GenerationAgent.GenerationRequest request,
-                               boolean cacheEnabled, boolean expansionEnabled) {
+                               boolean cacheEnabled) {
         this.schemaName = schemaName;
         this.tables = tables;
         this.rules = rules;
@@ -86,7 +83,7 @@ public class CorrectionPipeline {
 
         staging.drop(schemaName);            // 回滚 = 重建工作区
         staging.create(schemaName, tables);
-        generationAgent.generate(request, cacheEnabled, expansionEnabled, this::onTableCompleted);
+        generationAgent.generate(request, cacheEnabled, this::onTableCompleted);
         finish();
 
         Map<String, GeneratedData> finalData = staging.read(schemaName, tables);

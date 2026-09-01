@@ -185,7 +185,15 @@
   <div class="view" id="view4">
     <div class="card">
       <h2>生成</h2>
-      <button id="btnGen4">开始生成</button>
+      <div class="row" style="margin-bottom:10px;align-items:center;gap:10px">
+        <label>生成模式：
+          <select id="genMode" style="min-width:120px">
+            <option value="full">全量重建</option>
+            <option value="incremental">增量追加</option>
+          </select>
+        </label>
+        <button id="btnGen4">开始生成</button>
+      </div>
       <div class="hint" id="genMsg"></div>
       <table>
         <thead><tr><th>表名</th><th>目标</th><th>实际</th><th>校验</th></tr></thead>
@@ -462,24 +470,41 @@ $('btnGen4').onclick = () => busy($('btnGen4'), '生成中...', async () => {
     rows[t] = parseInt(inp ? inp.value : 0) || 0;
   });
   if (!Object.keys(rows).length) { $('genMsg').innerHTML = '<span class="err">请先选择表</span>'; return; }
+  const mode = $('genMode').value;
   $('genMsg').textContent = '生成中...';
-  const r = await api('/api/generate', Object.assign({}, db, { rows }));
+  const r = await api(mode === 'incremental' ? '/api/incremental' : '/api/generate', Object.assign({}, db, { rows }));
   if (r.error) { $('genMsg').innerHTML = '<span class="err">'+r.error+'</span>'; return; }
-  genResult = r;
-  $('genResult').innerHTML = Object.entries(r.actualCounts||{}).map(([t,n]) =>
-    '<tr><td>'+t+'</td><td>'+(rows[t]||'-')+'</td><td>'+n+'</td><td>'+(r.validation===0?'<span class="ok">✓</span>':'<span class="warn">'+r.validation+'</span>')+'</td></tr>').join('');
-  $('genMsg').innerHTML = r.validation===0
-    ? '<span class="ok">✓ 校验通过，耗时 '+r.elapsedMs+'ms</span>'
-    : '<span class="warn">⚠ 校验 '+r.validation+' 个问题，自动修正中...</span>';
-  // T5.3：校验有问题 → 自动调 /api/correct 收敛（修正发生在 staging，发布前二次确认兜底）
-  if (r.validation > 0) {
-    const fix = await api('/api/correct', db);
-    if (fix && fix.error !== undefined) {
-      $('genMsg').innerHTML = '<span class="warn">⚠ 校验 '+r.validation+' 个问题，自动修正失败：'+fix.error+'</span>';
-    } else if (fix && fix.finalErrors === 0) {
-      $('genMsg').innerHTML = '<span class="ok">✓ 自动修正收敛：修复 '+fix.fixCount+' 处，'+fix.iterations+' 轮，剩余 0 问题</span>';
+  if (mode === 'incremental') {
+    // 增量模式：actualCounts=新增行数；校验在 validationInitialErrors；修正结果在 fix*
+    genResult = r;
+    $('genResult').innerHTML = Object.entries(r.actualCounts||{}).map(([t,n]) =>
+      '<tr><td>'+t+'</td><td>'+(rows[t]||'-')+'</td><td>'+n+'</td><td>'+(r.finalErrors===0?'<span class="ok">✓</span>':'<span class="warn">'+r.finalErrors+'</span>')+'</td></tr>').join('');
+    const added = Object.values(r.actualCounts||{}).reduce((a,b)=>a+b,0);
+    if (r.baselineEmpty) {
+      $('genMsg').innerHTML = '<span class="warn">⚠ staging 无现有数据，增量退化为全量（'+r.elapsedMs+'ms）</span>';
+    } else if (r.converged) {
+      $('genMsg').innerHTML = '<span class="ok">✓ 增量完成：新增 '+added+' 行，修正 '+(r.fixCount||0)+' 处，剩余 '+(r.finalErrors||0)+' 问题，耗时 '+r.elapsedMs+'ms</span>';
     } else {
-      $('genMsg').innerHTML = '<span class="warn">⚠ 修正 '+fix.iterations+' 轮，修复 '+fix.fixCount+' 处，仍剩 '+(fix.finalErrors||'?')+' 个问题</span>';
+      $('genMsg').innerHTML = '<span class="warn">⚠ 增量完成但未完全收敛：修正 '+(r.fixCount||0)+' 处，仍剩 '+(r.finalErrors||'?')+' 个问题</span>';
+    }
+  } else {
+    // 全量模式：重建 staging + 校验；有问题自动调 /api/correct 收敛
+    genResult = r;
+    $('genResult').innerHTML = Object.entries(r.actualCounts||{}).map(([t,n]) =>
+      '<tr><td>'+t+'</td><td>'+(rows[t]||'-')+'</td><td>'+n+'</td><td>'+(r.validation===0?'<span class="ok">✓</span>':'<span class="warn">'+r.validation+'</span>')+'</td></tr>').join('');
+    $('genMsg').innerHTML = r.validation===0
+      ? '<span class="ok">✓ 校验通过，耗时 '+r.elapsedMs+'ms</span>'
+      : '<span class="warn">⚠ 校验 '+r.validation+' 个问题，自动修正中...</span>';
+    // T5.3：校验有问题 → 自动调 /api/correct 收敛（修正发生在 staging，发布前二次确认兜底）
+    if (r.validation > 0) {
+      const fix = await api('/api/correct', db);
+      if (fix && fix.error !== undefined) {
+        $('genMsg').innerHTML = '<span class="warn">⚠ 校验 '+r.validation+' 个问题，自动修正失败：'+fix.error+'</span>';
+      } else if (fix && fix.finalErrors === 0) {
+        $('genMsg').innerHTML = '<span class="ok">✓ 自动修正收敛：修复 '+fix.fixCount+' 处，'+fix.iterations+' 轮，剩余 0 问题</span>';
+      } else {
+        $('genMsg').innerHTML = '<span class="warn">⚠ 修正 '+fix.iterations+' 轮，修复 '+fix.fixCount+' 处，仍剩 '+(fix.finalErrors||'?')+' 个问题</span>';
+      }
     }
   }
   // 发布表（策略：仅追加 APPEND / 不动 KEEP，不清空目标库）
