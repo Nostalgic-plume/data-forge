@@ -1,10 +1,16 @@
 package com.dataforge.expansion;
 
+import com.dataforge.derivation.ExpressionEvaluator;
+import com.dataforge.derivation.ExpressionException;
 import com.dataforge.model.*;
 import com.dataforge.pipeline.PipelineContext;
 import org.springframework.stereotype.Component;
 
+import java.math.BigDecimal;
+import java.math.RoundingMode;
 import java.util.*;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 /**
  * 通用执行引擎（通用化核心）：读分析 agent 产出的 {@link GenerationPlan.TablePlan} 生成派生表，
@@ -26,6 +32,7 @@ public class GenericExpander {
     public List<DataRow> generate(GenerationPlan.TablePlan plan, TableMeta table,
                                   PipelineContext context,
                                   Map<String, Map<String, List<Object>>> completedData) {
+        validateExprColumns(plan, table);   // expr 列预检：只引用同表非 llm 计划列（derive-universal-design.md §H8）
         int target = context.rowCount(table.name());
         Random rng = context.newRandom();
         int seqStart = seqOffset(plan, table, completedData);
@@ -37,8 +44,15 @@ public class GenericExpander {
         List<DataRow> rows = new ArrayList<>(target);
         for (int i = 0; i < target; i++) {
             Map<String, Object> values = new LinkedHashMap<>();
+            // ① 非 expr 计划列先生成（expr 延后，保证可引用同表已算出的列，§H8 列序）
             for (GenerationPlan.ColumnPlan cp : plan.columns()) {
+                if ("expr".equals(cp.mode())) continue;
                 values.put(cp.column(), generateValue(cp, table, context, completedData, i, seqStart, rng, uniqueFk));
+            }
+            // ② expr 表达式列：引用仅限 ① 已生成的计划列（validateExprColumns 预检保证）
+            for (GenerationPlan.ColumnPlan cp : plan.columns()) {
+                if (!"expr".equals(cp.mode())) continue;
+                values.put(cp.column(), exprValue(cp, values, table));
             }
             // 默认列填充：plan 未覆盖的列（避免 NOT NULL 列 null 导致落库失败）
             for (ColumnDef col : table.columns()) {
@@ -319,6 +333,90 @@ public class GenericExpander {
             return null;
         }
     }
+
+    // ---- expr 表达式派生列（derive-universal-design.md §H8） ----
+
+    /** expr 列预检：expr 非空；引用列 ⊆ 同表「非 expr、非 llm」的计划列（违者启动即抛，不静默） */
+    private static void validateExprColumns(GenerationPlan.TablePlan plan, TableMeta table) {
+        Set<String> allowed = new HashSet<>();
+        for (GenerationPlan.ColumnPlan cp : plan.columns()) {
+            if (!"expr".equals(cp.mode())) allowed.add(cp.column());
+        }
+        for (GenerationPlan.ColumnPlan cp : plan.columns()) {
+            if ("llm".equals(cp.mode())) allowed.remove(cp.column());   // expr 不得引用 llm 列（生成时为 null）
+        }
+        for (GenerationPlan.ColumnPlan cp : plan.columns()) {
+            if (!"expr".equals(cp.mode())) continue;
+            String expr = cp.param("expr");
+            if (expr == null || expr.isBlank()) {
+                throw new IllegalStateException("表 `" + table.name() + "` 列 `" + cp.column()
+                        + "` expr 参数缺失（mode=expr 需 params.expr）");
+            }
+            Set<String> refs = ExpressionEvaluator.referencedColumns(expr);
+            if (!allowed.containsAll(refs)) {
+                Set<String> bad = new HashSet<>(refs);
+                bad.removeAll(allowed);
+                throw new IllegalStateException("表 `" + table.name() + "` 列 `" + cp.column()
+                        + "` expr 引用了未先生成/不允许的列 " + bad
+                        + "（expr 只能引用同表非 llm 的计划列，§H8）");
+            }
+        }
+    }
+
+    /** expr 列求值：引用列值转 BigDecimal → 表达式计算 → 按列 scale 收口（血缘由 tagAll 统一标 EXPAND） */
+    private static Object exprValue(GenerationPlan.ColumnPlan cp, Map<String, Object> values, TableMeta table) {
+        String expr = cp.param("expr");
+        Set<String> refs = ExpressionEvaluator.referencedColumns(expr);
+        Map<String, BigDecimal> rowValues = new HashMap<>();
+        for (String col : refs) {
+            rowValues.put(col, toBigDecimal(values.get(col), col));
+        }
+        BigDecimal raw;
+        try {
+            raw = ExpressionEvaluator.eval(expr, rowValues);
+        } catch (ExpressionException e) {
+            throw new IllegalStateException("表列 `" + table.name() + "`.`" + cp.column()
+                    + "` expr 求值失败（expr: " + expr + "）: " + e.getMessage(), e);
+        }
+        ColumnDef colDef = table.columns().stream()
+                .filter(c -> c.name().equals(cp.column())).findFirst().orElse(null);
+        return raw.setScale(exprScale(colDef, cp.param("scale")), RoundingMode.HALF_UP);
+    }
+
+    /** 列值 → BigDecimal（null 返回 null，由 ExpressionEvaluator 按"无值"抛；字符串尝试解析数字） */
+    private static BigDecimal toBigDecimal(Object v, String column) {
+        if (v == null) return null;
+        if (v instanceof BigDecimal bd) return bd;
+        if (v instanceof Number n) return new BigDecimal(n.toString());
+        if (v instanceof String s) {
+            try {
+                return new BigDecimal(s.trim());
+            } catch (NumberFormatException ignored) {
+                // 落到下方统一抛"非数值"
+            }
+        }
+        throw new ExpressionException("列 `" + column + "` 值非数值，无法参与 expr 计算: " + v);
+    }
+
+    /** 目标列收口 scale：params.scale 覆盖 > DECIMAL(M,D) 的 D > 默认 2（§H3） */
+    private static int exprScale(ColumnDef col, String override) {
+        if (override != null && !override.isBlank()) {
+            try {
+                return Integer.parseInt(override.trim());
+            } catch (NumberFormatException ignored) {
+                // 非法覆盖 → 回落类型 scale
+            }
+        }
+        if (col != null && col.type() != null) {
+            Matcher m = DECIMAL_SCALE.matcher(col.type().trim());
+            if (m.find()) return Integer.parseInt(m.group(1));
+        }
+        return 2;
+    }
+
+    /** DECIMAL(M,D) 的 D 提取 */
+    private static final Pattern DECIMAL_SCALE =
+            Pattern.compile("(?i)decimal\\s*\\(\\s*\\d+\\s*,\\s*(\\d+)\\s*\\)");
 
     private static DataRow tagAll(Map<String, Object> values, TableMeta table) {
         Map<String, com.dataforge.model.SourceTag> lineage = new LinkedHashMap<>();
