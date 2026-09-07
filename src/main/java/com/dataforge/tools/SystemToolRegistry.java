@@ -34,10 +34,10 @@ public final class SystemToolRegistry {
                     "CorrectionEngine.run（手写 ReAct 收敛循环，id 锚定最小干预）"),
             new SystemTool(
                     "derive", "派生",
-                    "按分析产物/派生规则批量派生派生列（三路生成之一：LLM 语义 / 引擎直接 / 派生）",
-                    "plan, table",
-                    "GeneratedData",
-                    "ExpansionEngine / GenericExpander（业务 Expander；规划扩展为通用多步派生工作流）")
+                    "按派生规则批量派生派生列（三路生成之一）：行内派生列由表达式 expr 计算，跨表反向聚合由 AGG_EQUAL 规则回填",
+                    "expr: plan+table；聚合: data+aggRules",
+                    "GeneratedData / boolean(applied)",
+                    "GenericExpander + ExpressionEvaluator(expr) · ReconcileEngine(AGG_EQUAL 回填，一份规则两处复用)")
     );
 
     /** 已注册工具列表（只读） */

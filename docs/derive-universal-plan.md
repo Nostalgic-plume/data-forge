@@ -113,3 +113,16 @@
 ## 执行顺序备注（对实现者的要求）
 - 严格按 T1→T7，每完成一个子任务**先过该子任务验收再进入下一个**。
 - 每个改动保持「小而可审」；BigDecimal/列序/血缘/失败路径以设计文档 §2/§5/§6 为准。
+
+---
+
+## 实现状态记录（执行进度）
+
+| 批次 | 内容 | 状态 |
+|---|---|---|
+| 批1 | T1 ExpressionEvaluator · T2 GenericExpander expr 列 | ✅ 已实现，24 测试绿，已推 gitee |
+| 批2 | T3 FORMULA 规则接入（人工确认 gate） | ✅ 已实现，6 测试绿，已推 gitee |
+| 批3 | T4 ReconcileEngine · T5 Reconciliation 收敛（收敛版：total 段由 AGG 规则接管，subtotal/actual 待订单域迁移 expr） | ✅ 已实现，全量 144 测试绿，已推 gitee |
+| 批4 | T6 全量回归 · T7 文档/答辩口径 | ✅ 文档已更新（README/SystemToolRegistry/本计划书） |
+
+**遗留（后续任务，非本次范围）**：订单域完整迁移到「expr + AGG 计划驱动」并移除 OrdersExpander/Reconciliation legacy 业务字面量（§H9）；真实 LLM 端（RealLlmClient）自动提炼 FORMULA 的提示词增强。
