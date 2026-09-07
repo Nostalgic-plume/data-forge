@@ -2,6 +2,8 @@ package com.dataforge.analysis;
 
 import com.dataforge.model.GenerationPlan;
 import com.dataforge.model.ProjectRules;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
@@ -22,6 +24,8 @@ import java.util.Map;
  * </ul></p>
  */
 public final class RuleSetters {
+
+    private static final Logger log = LoggerFactory.getLogger(RuleSetters.class);
 
     private RuleSetters() {}
 
@@ -81,6 +85,24 @@ public final class RuleSetters {
                 if (min != null && !min.isBlank()) p.put("min", min);
                 if (max != null && !max.isBlank()) p.put("max", max);
                 yield GenerationPlan.ColumnPlan.of(cp.column(), "valueRange", p);
+            }
+            case "FORMULA" -> {
+                // 表达式派生规则（derive-universal-design.md §3.3）：仅人工确认后落 plan——
+                // LLM 提议默认 AGENT，需 USER_CONFIRMED/USER_OVERRIDE 才落地，防 LLM 表达式直接驱动生成
+                ProjectRules.Rule.Source src = r.source();
+                if (src != ProjectRules.Rule.Source.USER_CONFIRMED
+                        && src != ProjectRules.Rule.Source.USER_OVERRIDE) {
+                    log.warn("FORMULA 规则未确认（source={}）不落 plan: {}.{}", src, r.table(), r.column());
+                    yield null;
+                }
+                // 护栏：目标列已被加权/枚举启发式覆盖时不覆盖（同 VALUE_RANGE 护栏）
+                if ("weighted".equals(cp.mode()) || "enum".equals(cp.mode())) yield null;
+                String expr = r.params().get("expr");
+                if (expr == null || expr.isBlank()) {
+                    log.warn("FORMULA 规则缺 params.expr: {}.{}", r.table(), r.column());
+                    yield null;
+                }
+                yield GenerationPlan.ColumnPlan.of(cp.column(), "expr", Map.of("expr", expr));
             }
             default -> null;
         };
