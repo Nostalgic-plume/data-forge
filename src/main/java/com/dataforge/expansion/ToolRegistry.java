@@ -80,6 +80,11 @@ public final class ToolRegistry {
                     "value",
                     "固定值列（deleted=0 等）",
                     "deleted = 0"),
+            // ---- 计算型（表达式派生：值由同表已生成数值列经表达式计算）----
+            new ToolDef("expr", "计算型", "表达式派生（引用同表已生成数值列计算）",
+                    "expr（如 round(price*quantity,2)）",
+                    "数值派生列；表达式只引用同表非 llm 计划列（ExpressionEvaluator 白名单）",
+                    "order_item.subtotal = round(price * quantity, 2)"),
             // ---- 语义型 ----
             new ToolDef("llm", "语义型", "LLM 生成语义值（无工具可覆盖时的兜底）",
                     "无",
