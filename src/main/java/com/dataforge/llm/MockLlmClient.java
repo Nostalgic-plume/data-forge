@@ -361,6 +361,13 @@ public class MockLlmClient implements DataLlm {
             rules.add(ProjectRules.Rule.aggEqual("orders", "total_amount", "order_item", "subtotal",
                     "order_id", "总额 = Σ 明细小计（用户确认）", ProjectRules.Rule.Source.USER_CONFIRMED));
         }
+        // 小计/公式/表达式指令：补 FORMULA（order_item.subtotal = 单价×数量，用户确认落 plan）
+        if ((ins.contains("小计") || ins.contains("公式") || ins.contains("表达式"))
+                && rules.stream().noneMatch(r -> r.type().equals("FORMULA"))) {
+            rules.add(new ProjectRules.Rule("order_item", "subtotal", "FORMULA",
+                    "小计 = 单价 × 数量（用户确认）", 0.95,
+                    ProjectRules.Rule.Source.USER_CONFIRMED, Map.of("expr", "round(price * quantity, 2)")));
+        }
         // 状态规则：提到状态且没有 → 补 ENUM_WEIGHT
         if (ins.contains("状态") && rules.stream().noneMatch(r -> r.type().equals("ENUM_WEIGHT"))) {
             rules.add(new ProjectRules.Rule("orders", "status", "ENUM_WEIGHT",
@@ -382,7 +389,8 @@ public class MockLlmClient implements DataLlm {
         // 其他指令：追加一条用户备注规则（USER_OVERRIDE，用户声明 > agent 推断）
         if (!ins.isBlank() && !ins.contains("删") && !ins.contains("去")
                 && !ins.contains("金额") && !ins.contains("状态")
-                && !ins.contains("物流") && !ins.contains("发货") && !ins.contains("运单")) {
+                && !ins.contains("物流") && !ins.contains("发货") && !ins.contains("运单")
+                && !ins.contains("小计") && !ins.contains("公式") && !ins.contains("表达式")) {
             rules.add(new ProjectRules.Rule("custom", "custom", "USER_NOTE", ins, 1.0,
                     ProjectRules.Rule.Source.USER_OVERRIDE, Map.of()));
         }
