@@ -2,12 +2,14 @@ package com.dataforge.agent;
 
 import com.dataforge.cache.GenerationCache;
 import com.dataforge.config.GeneratorProperties;
+import com.dataforge.derivation.ReconcileEngine;
 import com.dataforge.expansion.ExpansionEngine;
 import com.dataforge.llm.DataLlm;
 import com.dataforge.model.ColumnDef;
 import com.dataforge.model.DataRow;
 import com.dataforge.model.GeneratedData;
 import com.dataforge.model.GenerationPlan;
+import com.dataforge.model.ProjectRules;
 import com.dataforge.model.TableMeta;
 import com.dataforge.pipeline.*;
 import org.springframework.stereotype.Service;
@@ -43,6 +45,14 @@ public class DefaultGenerationAgent implements GenerationAgent {
         if (expansion != null) {
             expansion.setPlan(plan);
         }
+    }
+
+    /** correctionRules 中 AGG_EQUAL 规则（生成侧回填消费；无则空） */
+    private static List<ProjectRules.Rule> aggRules(ProjectRules rules) {
+        if (rules == null || rules.correctionRules() == null) return List.of();
+        return rules.correctionRules().stream()
+                .filter(r -> "AGG_EQUAL".equals(r.type()))
+                .toList();
     }
 
     /** A1：分析产出的逐表 PK 策略 hint（SourceScanner @TableId 判定）→ PkGen 消费（fallback 全局） */
@@ -90,8 +100,9 @@ public class DefaultGenerationAgent implements GenerationAgent {
 
         Map<String, GeneratedData> data = outcome.results().entrySet().stream()
                 .collect(Collectors.toMap(Map.Entry::getKey, e -> e.getValue().data()));
-        // 跨表确定性对账（total_amount = Σ subtotal 等，非 LLM）
-        Reconciliation.reconcile(data);
+        // 通用聚合回填（AGG_EQUAL 规则驱动，一份规则两处复用）→ legacy Reconciliation 兜底行内/actual
+        boolean aggApplied = ReconcileEngine.apply(data, aggRules(req.rules()));
+        Reconciliation.reconcile(data, aggApplied);
 
         Map<String, Integer> actualCounts = new LinkedHashMap<>();
         Map<String, GenerationAgent.TableStat> tableStats = new LinkedHashMap<>();
@@ -171,8 +182,9 @@ public class DefaultGenerationAgent implements GenerationAgent {
             if (added != null) allRows.addAll(added.rows());
             data.put(t.name(), new GeneratedData(t.name(), t.columns(), allRows));
         }
-        // 跨现有对账（现有金额正确行重算不变，不误伤）
-        Reconciliation.reconcile(data);
+        // 跨现有对账（AGG 规则驱动优先；现有金额正确行重算不变，不误伤）
+        boolean aggApplied = ReconcileEngine.apply(data, aggRules(req.rules()));
+        Reconciliation.reconcile(data, aggApplied);
 
         Map<String, Integer> actualCounts = new LinkedHashMap<>();
         Map<String, GenerationAgent.TableStat> tableStats = new LinkedHashMap<>();
