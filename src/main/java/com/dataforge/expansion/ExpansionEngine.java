@@ -3,7 +3,7 @@ package com.dataforge.expansion;
 import com.dataforge.model.DataRow;
 import com.dataforge.model.GenerationPlan;
 import com.dataforge.model.TableMeta;
-import com.dataforge.pipeline.PipelineContext;
+import com.dataforge.model.PipelineContext;
 import org.springframework.stereotype.Service;
 
 import java.util.List;

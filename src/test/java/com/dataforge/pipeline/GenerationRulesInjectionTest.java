@@ -5,6 +5,7 @@ import com.dataforge.llm.DataLlm;
 import com.dataforge.model.ColumnDef;
 import com.dataforge.model.ProjectRules;
 import com.dataforge.model.TableMeta;
+import com.dataforge.model.PipelineContext;
 import com.dataforge.parser.DdlParser;
 import org.junit.jupiter.api.Test;
 

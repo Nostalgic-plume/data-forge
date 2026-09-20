@@ -7,6 +7,7 @@ import com.dataforge.model.DataRow;
 import com.dataforge.model.GeneratedData;
 import com.dataforge.model.SourceTag;
 import com.dataforge.model.TableMeta;
+import com.dataforge.model.PipelineContext;
 import com.dataforge.parser.DdlParser;
 import com.dataforge.validation.DataValidator;
 import org.junit.jupiter.api.BeforeAll;

@@ -3,7 +3,7 @@ package com.dataforge.expansion;
 import com.dataforge.derivation.ExpressionEvaluator;
 import com.dataforge.derivation.ExpressionException;
 import com.dataforge.model.*;
-import com.dataforge.pipeline.PipelineContext;
+import com.dataforge.model.PipelineContext;
 import org.springframework.stereotype.Component;
 
 import java.math.BigDecimal;

@@ -1,7 +1,5 @@
-package com.dataforge.pipeline;
+package com.dataforge.model;
 
-import com.dataforge.model.GeneratedData;
-import com.dataforge.model.TableMeta;
 
 import java.util.*;
 
@@ -10,7 +8,8 @@ import java.util.*;
  *
  * <p>PkGen 写入 pkSkeletons → FkAlloc 消费 → 写 fkAllocations → ContentGen 消费 → generatedData。</p>
  *
- * <p>仅管线内部使用（package 内可见性由调用约定保证）。</p>
+ * <p>定位：<b>跨包共享契约</b>——展开器（expansion）与管线（pipeline）都要用它，故定义在 model 包，
+ * 避免 expansion ↔ pipeline 的包级循环依赖。</p>
  */
 public final class PipelineContext {
 

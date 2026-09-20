@@ -12,6 +12,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.dataforge.llm.DataLlm;
 import com.dataforge.model.*;
 import com.dataforge.service.GenerationSupport;
+import com.dataforge.service.HistoryService;
 import com.dataforge.service.IncrementalSupport;
 import com.dataforge.service.RealTableReader;
 import com.dataforge.service.RulesService;
