@@ -3,7 +3,7 @@ package com.dataforge.expansion.blueprint;
 import com.dataforge.expansion.Expander;
 import com.dataforge.model.DataRow;
 import com.dataforge.model.TableMeta;
-import com.dataforge.pipeline.PipelineContext;
+import com.dataforge.model.PipelineContext;
 
 import java.util.ArrayList;
 import java.util.LinkedHashMap;

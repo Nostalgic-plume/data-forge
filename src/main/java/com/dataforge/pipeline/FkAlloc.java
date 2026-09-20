@@ -2,6 +2,7 @@ package com.dataforge.pipeline;
 
 import com.dataforge.model.ForeignKeyDef;
 import com.dataforge.model.TableMeta;
+import com.dataforge.model.PipelineContext;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 

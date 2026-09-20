@@ -11,6 +11,7 @@ import com.dataforge.model.GeneratedData;
 import com.dataforge.model.GenerationPlan;
 import com.dataforge.model.ProjectRules;
 import com.dataforge.model.TableMeta;
+import com.dataforge.model.PipelineContext;
 import com.dataforge.pipeline.*;
 import org.springframework.stereotype.Service;
 

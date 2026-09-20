@@ -1,4 +1,4 @@
-package com.dataforge.web;
+package com.dataforge.service;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.slf4j.Logger;

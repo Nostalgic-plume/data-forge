@@ -5,7 +5,7 @@ import com.dataforge.model.GenerationPlan;
 import com.dataforge.model.TableMeta;
 import com.dataforge.parser.DdlParser;
 import com.dataforge.pipeline.FkAlloc;
-import com.dataforge.pipeline.PipelineContext;
+import com.dataforge.model.PipelineContext;
 import com.dataforge.pipeline.PkGen;
 import org.junit.jupiter.api.Test;
 

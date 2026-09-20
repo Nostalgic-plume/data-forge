@@ -5,7 +5,7 @@ import com.dataforge.model.DataRow;
 import com.dataforge.model.GenerationPlan;
 import com.dataforge.model.SourceTag;
 import com.dataforge.model.TableMeta;
-import com.dataforge.pipeline.PipelineContext;
+import com.dataforge.model.PipelineContext;
 import org.junit.jupiter.api.Test;
 
 import java.math.BigDecimal;

@@ -3,7 +3,7 @@ package com.dataforge.expansion;
 import com.dataforge.model.ColumnDef;
 import com.dataforge.model.DataRow;
 import com.dataforge.model.TableMeta;
-import com.dataforge.pipeline.PipelineContext;
+import com.dataforge.model.PipelineContext;
 
 import java.util.List;
 import java.util.Map;

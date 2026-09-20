@@ -4,7 +4,7 @@ import com.dataforge.expansion.primitive.StatusTimeline;
 import com.dataforge.model.ColumnDef;
 import com.dataforge.model.DataRow;
 import com.dataforge.model.TableMeta;
-import com.dataforge.pipeline.PipelineContext;
+import com.dataforge.model.PipelineContext;
 
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
