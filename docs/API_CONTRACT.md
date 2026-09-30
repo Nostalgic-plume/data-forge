@@ -137,7 +137,9 @@ record GenerationRequest(
     IncrementalConfig incremental,   // 全量模式传 mode=full
     long seed,                       // 确定性种子（规则层随机源，可复现）
     int batchSize,                   // 初始批次（batch 自适应会动态调整）
-    int maxConcurrency               // 表内批次并行度（防限流，6-8）
+    int maxConcurrency,              // 表内批次并行度（防限流，6-8）
+    GenerationPlan plan              // 分析 agent 产出的生成计划（null = 内置模板 fallback）
+                                     // 随请求传入而非挂在 agent 单例上：并发运行不互相覆盖计划
 ) {}
 
 record GenerationResult(
@@ -201,7 +203,7 @@ enum PkStrategy { SEQUENTIAL, SNOWFLAKE }
 **一次运行全流程（整合版，P0 为基础流程）：**
 
 ```
-输入：GenerationRequest{ 表结构, rules, 行数, 增量配置(可选), seed(可选), batchSize(可选), 并发度(可选) }
+输入：GenerationRequest{ 表结构, rules, 行数, 增量配置(可选), seed(可选), batchSize(可选), 并发度(可选), 生成计划(可选) }
   │
   ▼
 ① 缓存 / 断点恢复（一个机制两个用途）

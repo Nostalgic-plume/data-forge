@@ -22,13 +22,15 @@ import java.util.stream.Collectors;
  *   <li><b>fixed</b>：固定枚举表——内置种子或计划种子</li>
  * </ul>
  * 无 plan 时保留 P1 内置分类（Java 展开器模板 + FixedSamples）。</p>
+ *
+ * <p><b>无状态</b>：本类是 Spring 单例，<b>不持有生成计划</b>——计划随 {@link PipelineContext}
+ * 每次运行传入（并发运行不互相覆盖）；判定方法一律显式收 plan 参数。</p>
  */
 @Service
 public class ExpansionEngine {
 
     private final Map<String, Expander> expanders;
     private final GenericExpander generic;
-    private GenerationPlan plan = GenerationPlan.empty();
 
     public ExpansionEngine(List<Expander> expanders, GenericExpander generic) {
         this.expanders = expanders.stream()
@@ -36,34 +38,24 @@ public class ExpansionEngine {
         this.generic = generic;
     }
 
-    /** 设置当前生成计划（分析 agent 产出；空计划 = 内置模板 fallback） */
-    public void setPlan(GenerationPlan plan) {
-        this.plan = plan == null ? GenerationPlan.empty() : plan;
-    }
-
-    /** 当前生成计划（A1：生成 agent 读逐表 PK 策略 hint） */
-    public GenerationPlan plan() {
-        return plan;
-    }
-
     /** 是否为派生表（配置驱动或内置模板） */
-    public boolean isExpanded(String tableName) {
-        GenerationPlan.TablePlan tp = plan.tablePlan(tableName);
+    public boolean isExpanded(GenerationPlan plan, String tableName) {
+        GenerationPlan.TablePlan tp = nonNull(plan).tablePlan(tableName);
         if (tp != null) return tp.isDerived();
         return expanders.containsKey(tableName);
     }
 
     /** 是否为固定样本表 */
-    public boolean isFixed(String tableName) {
-        GenerationPlan.TablePlan tp = plan.tablePlan(tableName);
+    public boolean isFixed(GenerationPlan plan, String tableName) {
+        GenerationPlan.TablePlan tp = nonNull(plan).tablePlan(tableName);
         if (tp != null) return "fixed".equals(tp.builder());
         return FixedSamples.isFixed(tableName);
     }
 
-    /** 展开派生表（配置驱动优先，内置模板 fallback） */
+    /** 展开派生表（配置驱动优先，内置模板 fallback）；计划取自本次运行的上下文 */
     public List<DataRow> expand(TableMeta table, PipelineContext context,
                                 Map<String, Map<String, List<Object>>> completedData) {
-        GenerationPlan.TablePlan tp = plan.tablePlan(table.name());
+        GenerationPlan.TablePlan tp = nonNull(context.plan()).tablePlan(table.name());
         if (tp != null && tp.isDerived()) {
             return generic.generate(tp, table, context, completedData);
         }
@@ -73,13 +65,17 @@ public class ExpansionEngine {
     }
 
     /** 计划中该表的 LLM 语义列（商品名/规格等）：派生表生成后由 ContentGen 批量调 LLM 回填 */
-    public List<com.dataforge.model.ColumnDef> llmColumns(TableMeta table) {
-        GenerationPlan.TablePlan tp = plan.tablePlan(table.name());
+    public List<com.dataforge.model.ColumnDef> llmColumns(GenerationPlan plan, TableMeta table) {
+        GenerationPlan.TablePlan tp = nonNull(plan).tablePlan(table.name());
         if (tp == null) return List.of();
         Set<String> llmCols = tp.columns().stream()
                 .filter(c -> c.mode().equals("llm"))
                 .map(GenerationPlan.ColumnPlan::column)
                 .collect(Collectors.toSet());
         return table.columns().stream().filter(c -> llmCols.contains(c.name())).toList();
+    }
+
+    private static GenerationPlan nonNull(GenerationPlan plan) {
+        return plan == null ? GenerationPlan.empty() : plan;
     }
 }

@@ -9,6 +9,7 @@ import com.dataforge.config.GeneratorProperties;
 import com.dataforge.correction.CorrectionEngine;
 import com.dataforge.llm.DataLlm;
 import com.dataforge.model.GeneratedData;
+import com.dataforge.model.GenerationPlan;
 import com.dataforge.model.IncrementalConfig;
 import com.dataforge.model.ProjectRules;
 import com.dataforge.model.TableMeta;
@@ -34,7 +35,11 @@ import java.util.Map;
  * 节点内部一律调用现有组件（Agent / Validator / CorrectionEngine），不复制业务逻辑。</p>
  *
  * <p><b>数据不经过状态</b>：生成结果（十万行级）直接落 staging 库，状态里只留摘要；
- * 大数据只作为局部变量在节点内流转。</p>
+ * 大数据只作为局部变量在节点内流转。表结构也不进状态（只存表名，节点按需重读）。</p>
+ *
+ * <p><b>修正循环在图内还是节点内</b>：循环留在 {@link CorrectionEngine} 内部（ReAct 收敛四要素
+ * 依赖跨轮"问题清单闭环"，拆到图上回边会丢掉跨轮回归基准）。图上只编排"要不要修正"这一步，
+ * 不再对同一批修正做二次循环——否则图回边 × 引擎内循环 = 轮数平方放大。</p>
  */
 @Component
 public class ForgeNodes {
@@ -69,27 +74,45 @@ public class ForgeNodes {
 
     /** 读表结构 → 算引用闭包 → 分析规则与生成计划 */
     public Map<String, Object> analyze(ForgeState s, RunnableConfig cfg) {
+        // 空请求守卫：绝不能带着空闭包往下走（下游 drop staging 会把用户已有数据清空）
+        if (s.rows().isEmpty()) {
+            throw new IllegalArgumentException("请先在表清单中设置行数");
+        }
         DbSession db = session(cfg);
+        int minParentRows = s.minParentRows() != null ? s.minParentRows() : props.minParentRows();
         List<TableMeta> allTables = db.schemaReader.readTables(s.schema());
         GenerationSupport.Closure closure = GenerationSupport.referenceClosure(
-                allTables, s.rows(), props.minParentRows());
+                allTables, s.rows(), minParentRows);
         List<TableMeta> genTables = allTables.stream()
                 .filter(t -> closure.tables().contains(t.name())).toList();
 
-        AnalysisAgent.AnalysisResult analyzed = analysisAgent.analyzeTables(genTables);
-        generationAgent.setPlan(analyzed.plan());
-        reportOf(cfg).analysis(analyzed);
-
-        int ruleCount = analyzed.rules() == null ? 0
-                : analyzed.rules().generationRules().size() + analyzed.rules().correctionRules().size();
-        log.info("[编排] 分析完成：{} 张表 / {} 条规则", genTables.size(), ruleCount);
+        // 增量 replan=false：跳过 LLM 重规划，退回内置模板 fallback（省一次 LLM 调用）
+        GenerationPlan plan = GenerationPlan.empty();
+        int ruleCount = 0;
+        if (!s.incremental() || s.replan()) {
+            AnalysisAgent.AnalysisResult analyzed = analysisAgent.analyzeTables(genTables);
+            plan = analyzed.plan();
+            reportOf(cfg).analysis(analyzed);
+            ruleCount = analyzed.rules() == null ? 0
+                    : analyzed.rules().generationRules().size() + analyzed.rules().correctionRules().size();
+        } else {
+            log.warn("[编排] 增量 replan=false：跳过分析规划，退回内置模板 fallback");
+        }
 
         Map<String, Object> out = new LinkedHashMap<>();
-        out.put(ForgeState.TABLES, genTables);
+        out.put(ForgeState.TABLE_NAMES, genTables.stream().map(TableMeta::name).toList());
+        out.put(ForgeState.PLAN, plan);
         // 增量模式：只按用户显式指定的行数生成，父表 rowCount=0 由 generateIncremental 内部按"引用现有"处理
         out.put(ForgeState.ROW_COUNTS, s.incremental() ? new LinkedHashMap<>(s.rows()) : closure.rowCounts());
         out.put(ForgeState.RULE_COUNT, ruleCount);
+        // 新一次运行（analyze 只在全新运行执行；断点恢复从被中断节点续跑）→ 运行态计数器复位
+        out.put(ForgeState.ITERATION, 0);
+        out.put(ForgeState.ERROR_COUNT, 0);
+        out.put(ForgeState.FIX_COUNT, 0);
+        out.put(ForgeState.CONVERGED, false);
+        out.put(ForgeState.ROLLED_BACK, false);
         out.put(ForgeState.LOG, "分析：" + genTables.size() + " 张表 / " + ruleCount + " 条规则");
+        log.info("[编排] 分析完成：{} 张表 / {} 条规则", genTables.size(), ruleCount);
         return out;
     }
 
@@ -97,20 +120,27 @@ public class ForgeNodes {
 
     public Map<String, Object> generateAndStage(ForgeState s, RunnableConfig cfg) {
         DbSession db = session(cfg);
-        List<TableMeta> genTables = s.tables();
+        List<TableMeta> genTables = tablesOf(s, cfg);
+        // 二次守卫：状态可来自检查点，落库前再挡一次空集（防 drop 掉用户已有 staging）
+        if (genTables.isEmpty()) {
+            throw new IllegalStateException("生成表集为空，已中止（不触碰 staging，避免清空已有数据）");
+        }
         ProjectRules rules = rulesService.currentRules();
+        boolean cacheEnabled = s.cacheEnabled() != null ? s.cacheEnabled() : props.cacheDir() != null;
         GenerationAgent.GenerationRequest req = new GenerationAgent.GenerationRequest(
                 genTables, rules, s.rowCounts(), IncrementalConfig.full(),
-                props.seed(), props.batchSize(), props.maxConcurrency());
+                props.seed(), props.batchSize(), props.maxConcurrency(), s.plan());
 
         GenerationAgent.GenerationResult result;
         Long scopeMinId = null;
+        boolean baselineEmpty = false;
         if (s.incremental()) {
             Map<String, GeneratedData> baseline = db.staging.read(s.schema(), genTables);
-            result = generationAgent.generateIncremental(req, baseline, s.cacheEnabled());
+            baselineEmpty = baseline.values().stream().allMatch(g -> g.rowCount() == 0);
+            result = generationAgent.generateIncremental(req, baseline, cacheEnabled);
             scopeMinId = IncrementalSupport.scopeMinIdOf(baseline);
         } else {
-            result = generationAgent.generate(req, false);
+            result = generationAgent.generate(req, cacheEnabled);
         }
 
         db.staging.drop(s.schema());
@@ -125,6 +155,9 @@ public class ForgeNodes {
         Map<String, Object> out = new LinkedHashMap<>();
         out.put(ForgeState.ACTUAL_COUNTS, result.actualCounts());
         out.put(ForgeState.FAILED_TABLES, result.failedTables());
+        if (s.incremental()) {
+            out.put(ForgeState.BASELINE_EMPTY, baselineEmpty);
+        }
         if (scopeMinId != null) {
             out.put(ForgeState.SCOPE_MIN_ID, scopeMinId);
         }
@@ -137,54 +170,56 @@ public class ForgeNodes {
     public Map<String, Object> validate(ForgeState s, RunnableConfig cfg) {
         DbSession db = session(cfg);
         ValidationReport report = db.validator.validate(
-                s.tables(), rulesService.currentRules(), s.schema());
+                tablesOf(s, cfg), rulesService.currentRules(), s.schema());
         reportOf(cfg).validation(report);
 
-        log.info("[编排] 校验：第 {} 轮，错误 {} 个", s.iteration(), report.totalErrors());
+        log.info("[编排] 校验：错误 {} 个", report.totalErrors());
 
         Map<String, Object> out = new LinkedHashMap<>();
         out.put(ForgeState.ERROR_COUNT, report.totalErrors());
-        if (s.iteration() == 0) {
-            out.put(ForgeState.INITIAL_ERRORS, report.totalErrors());
-        }
-        out.put(ForgeState.LOG, "校验第 " + s.iteration() + " 轮：" + report.totalErrors() + " 个错误");
+        out.put(ForgeState.INITIAL_ERRORS, report.totalErrors());
+        // 收敛 = 校验后无残留错误（全量模式同样适用，避免"未校验就宣称已收敛"）
+        out.put(ForgeState.CONVERGED, report.totalErrors() == 0);
+        out.put(ForgeState.LOG, "校验：" + report.totalErrors() + " 个错误");
         return out;
     }
 
-    // ---------- ④ 修正（一轮；内部仍复用现有 CorrectionEngine）----------
+    // ---------- ④ 修正（一轮编排；收敛循环仍在 CorrectionEngine 内）----------
 
     public Map<String, Object> correct(ForgeState s, RunnableConfig cfg) {
         DbSession db = session(cfg);
-        List<TableMeta> genTables = s.tables();
+        List<TableMeta> genTables = tablesOf(s, cfg);
         ProjectRules rules = rulesService.currentRules();
         Map<String, GeneratedData> data = db.staging.read(s.schema(), genTables);
         ValidationReport initial = db.validator.validate(genTables, rules, s.schema());
 
         CorrectionEngine engine = new CorrectionEngine(db.jdbc, db.staging, db.validator, llm);
+        long start = System.currentTimeMillis();
         CorrectionAgent.CorrectionResult fix = engine.run(
                 new CorrectionAgent.CorrectionRequest(
                         genTables, data, initial, rules, s.schema(), s.scopeMinId()),
                 props.maxIterations());
-        reportOf(cfg).correction(fix);
+        long elapsedMs = System.currentTimeMillis() - start;
+        reportOf(cfg).correction(fix, elapsedMs);   // 累加语义：多轮修正不覆盖前几轮数据
 
-        int round = s.iteration() + 1;
-        log.info("[编排] 修正第 {} 轮：{} 条，残留错误 {} 个",
-                round, fix.appliedFixes().size(), fix.finalReport().totalErrors());
+        int rounds = s.iteration() + fix.iterations();
+        log.info("[编排] 修正完成：引擎 {} 轮 / {} 条，残留错误 {} 个",
+                fix.iterations(), fix.appliedFixes().size(), fix.finalReport().totalErrors());
 
         Map<String, Object> out = new LinkedHashMap<>();
-        out.put(ForgeState.ITERATION, round);
+        out.put(ForgeState.ITERATION, rounds);
         out.put(ForgeState.ERROR_COUNT, fix.finalReport().totalErrors());
         out.put(ForgeState.CONVERGED, fix.converged());
         out.put(ForgeState.ROLLED_BACK, fix.rolledBack());
         out.put(ForgeState.FIX_COUNT, s.fixCount() + fix.appliedFixes().size());
-        out.put(ForgeState.LOG, "修正第 " + round + " 轮：" + fix.appliedFixes().size() + " 条");
+        out.put(ForgeState.LOG, "修正：" + fix.appliedFixes().size() + " 条 / " + fix.iterations() + " 轮");
         return out;
     }
 
     // ---------- ⑤ 报告 ----------
 
     public Map<String, Object> report(ForgeState s, RunnableConfig cfg) {
-        RunReport runReport = reportOf(cfg);
+        RunReport runReport = reportOf(cfg).mode(s.mode());
         Map<String, Object> summary = runReport.toMap();
         runReport.save();
         log.info("[编排] 运行报告已落盘 run-reports/");
@@ -197,7 +232,13 @@ public class ForgeNodes {
 
     // ---------- 条件边：校验后是否进入修正 ----------
 
-    /** 全量模式不修正（与现网 /api/generate 行为一致）；增量模式按收敛情况决定 */
+    /**
+     * 全量模式不修正（与现网 /api/generate 行为一致）；增量模式有错才进入修正。
+     *
+     * <p>修正轮数上限由 {@link CorrectionEngine#run} 内部判定（那里才有跨轮问题清单基准）；
+     * correct 之后直接进 report，不再回边 validate——避免"图回边 × 引擎内循环"把轮数放大成平方。
+     * 因此本方法只需两个闸门：模式 + 是否有错。</p>
+     */
     public String afterValidate(ForgeState s) {
         if (!s.incremental()) {
             return EDGE_DONE;
@@ -205,15 +246,17 @@ public class ForgeNodes {
         if (s.errorCount() == 0) {
             return EDGE_DONE;
         }
-        if (s.iteration() >= props.maxIterations()) {
-            log.warn("[编排] 达到修正轮数上限 {}，带着 {} 个残留错误收工",
-                    props.maxIterations(), s.errorCount());
-            return EDGE_DONE;
-        }
         return EDGE_RETRY;
     }
 
     // ---------- 运行时对象获取（不进状态）----------
+
+    /** 按状态里的表名从 schema 重读表结构（状态不放 TableMeta 对象：体积 + 检查点可序列化） */
+    private static List<TableMeta> tablesOf(ForgeState s, RunnableConfig cfg) {
+        List<String> names = s.tableNames();
+        return session(cfg).schemaReader.readTables(s.schema()).stream()
+                .filter(t -> names.contains(t.name())).toList();
+    }
 
     private static DbSession session(RunnableConfig cfg) {
         return (DbSession) cfg.metadata(ForgeState.META_SESSION).orElseThrow(

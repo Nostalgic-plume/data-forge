@@ -70,11 +70,17 @@ public final class RunReport {
         return this;
     }
 
-    /** 修正阶段：轮数 / 修正条数 / 收敛 / 回归回滚 / 残留错误 */
-    public RunReport correction(CorrectionAgent.CorrectionResult r) {
+    /**
+     * 修正阶段：轮数 / 修正条数 / 收敛 / 回归回滚 / 残留错误 / 耗时。
+     *
+     * <p><b>累加语义</b>：同一实例被多次调用（多轮修正、流水线多次触发）时，轮数与修正条数<b>累加</b>，
+     * 收敛/回滚/残留取<b>最后一次</b>结果——否则报告只反映最后一轮，与状态里的累计值互相矛盾。</p>
+     */
+    public RunReport correction(CorrectionAgent.CorrectionResult r, long elapsedMs) {
         if (r == null) return this;
-        data.put("correctIterations", r.iterations());
-        data.put("correctFixes", r.appliedFixes().size());
+        data.merge("correctIterations", r.iterations(), (a, b) -> ((Number) a).intValue() + ((Number) b).intValue());
+        data.merge("correctFixes", r.appliedFixes().size(), (a, b) -> ((Number) a).intValue() + ((Number) b).intValue());
+        data.merge("correctMs", elapsedMs, (a, b) -> ((Number) a).longValue() + ((Number) b).longValue());
         data.put("converged", r.converged());
         data.put("rolledBack", r.rolledBack());
         data.put("residualErrors", r.finalReport().totalErrors());
@@ -88,9 +94,9 @@ public final class RunReport {
         return this;
     }
 
-    /** 分析阶段：提炼规则总数（前置 + 后置） */
+    /** 分析阶段：提炼规则总数（前置 + 后置）；rules() 可能为空（分析未产出规则） */
     public RunReport analysis(AnalysisAgent.AnalysisResult r) {
-        if (r == null) return this;
+        if (r == null || r.rules() == null) return this;
         data.put("ruleCount", r.rules().generationRules().size() + r.rules().correctionRules().size());
         return this;
     }

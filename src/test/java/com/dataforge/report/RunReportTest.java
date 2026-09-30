@@ -55,7 +55,7 @@ class RunReportTest {
         ValidationReport v = validationReport();
         CorrectionAgent.CorrectionResult fix = new CorrectionAgent.CorrectionResult(
                 Map.of(), v, true, false, 1, List.of());
-        RunReport report = new RunReport().validation(v).correction(fix);
+        RunReport report = new RunReport().validation(v).correction(fix, 120L);
         Map<String, Object> data = report.toMap();
 
         assertEquals(2, data.get("validateErrors"), "校验错误行数");
@@ -63,9 +63,27 @@ class RunReportTest {
         assertEquals(50L, data.get("validateMs"));
         assertEquals(1, data.get("correctIterations"), "修正轮数");
         assertEquals(0, data.get("correctFixes"), "修正条数");
+        assertEquals(120L, data.get("correctMs"), "修正耗时（须计入 totalMs）");
         assertEquals(true, data.get("converged"), "收敛状态");
         assertEquals(false, data.get("rolledBack"), "回归回滚标记");
         assertEquals(2, data.get("residualErrors"), "收敛后残留错误");
+    }
+
+    /** 多轮修正：轮数与条数累加，收敛/残留取最后一轮（防只留最后一条导致与状态矛盾） */
+    @Test
+    void multiRoundCorrectionAccumulates() {
+        ValidationReport v = validationReport();
+        RunReport report = new RunReport()
+                .correction(new CorrectionAgent.CorrectionResult(Map.of(), v, false, false, 2,
+                        List.of(new com.dataforge.model.FixCommand(
+                                "orders", 1L, Map.of("total_amount", 1), "金额重算"))), 100L)
+                .correction(new CorrectionAgent.CorrectionResult(Map.of(), v, true, false, 1, List.of()), 50L);
+        Map<String, Object> data = report.toMap();
+
+        assertEquals(3, data.get("correctIterations"), "轮数应跨轮累加（2+1）");
+        assertEquals(1, data.get("correctFixes"), "修正条数应跨轮累加（1+0）");
+        assertEquals(150L, data.get("correctMs"), "耗时应跨轮累加");
+        assertEquals(true, data.get("converged"), "收敛状态取最后一轮");
     }
 
     @Test
@@ -86,7 +104,7 @@ class RunReportTest {
     @Test
     void nullStageIsSkipped() {
         // 未经历阶段传 null → 不抛异常、不写入对应 key（不误导为 0）
-        RunReport report = new RunReport().generation(null).validation(null).correction(null)
+        RunReport report = new RunReport().generation(null).validation(null).correction(null, 0L)
                 .scoring(null).analysis(null);
         Map<String, Object> data = report.toMap();
         assertFalse(data.containsKey("rowCount"), "未生成阶段不应写入 rowCount");

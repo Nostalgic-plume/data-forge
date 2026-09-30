@@ -1,6 +1,7 @@
 package com.dataforge.agent;
 
 import com.dataforge.model.GeneratedData;
+import com.dataforge.model.GenerationPlan;
 import com.dataforge.model.IncrementalConfig;
 import com.dataforge.model.ProjectRules;
 import com.dataforge.model.TableMeta;
@@ -30,7 +31,8 @@ public interface GenerationAgent {
             IncrementalConfig incremental,   // 全量模式传 mode=full
             long seed,                       // 确定性种子
             int batchSize,                   // 初始批次（batch 自适应动态调整）
-            int maxConcurrency               // 表内批次并行度
+            int maxConcurrency,              // 表内批次并行度
+            GenerationPlan plan              // 分析 agent 产出的生成计划（null = 内置模板 fallback）
     ) {
     }
 

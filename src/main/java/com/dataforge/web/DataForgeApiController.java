@@ -333,13 +333,13 @@ public class DataForgeApiController {
         Map<String, Integer> rowCounts = closure.rowCounts();
         List<TableMeta> genTables = tables.stream().filter(t -> closure.tables().contains(t.name())).toList();
 
-        // 配置驱动：分析产出生成计划 → 设到生成 agent
+        // 配置驱动：分析产出生成计划 → 随本次请求传入（不放生成 agent 单例）
         AnalysisAgent.AnalysisResult analyzed = analysisAgent.analyzeTables(genTables);
-        generationAgent.setPlan(analyzed.plan());
 
         GenerationAgent.GenerationResult result = generationAgent.generate(
                 new GenerationAgent.GenerationRequest(genTables, rulesService.currentRules(), rowCounts,
-                        IncrementalConfig.full(), props.seed(), props.batchSize(), props.maxConcurrency()),
+                        IncrementalConfig.full(), props.seed(), props.batchSize(), props.maxConcurrency(),
+                        analyzed.plan()),
                 false);
         // 动态落库 + 校验
         s.staging.drop(schema);
@@ -386,17 +386,17 @@ public class DataForgeApiController {
         Map<String, GeneratedData> baseline = s.staging.read(schema, genTables);
         boolean baselineEmpty = baseline.values().stream().allMatch(g -> g.rowCount() == 0);
 
-        // 生成计划（配置驱动，复用 /generate 逻辑）
-        if (replan) {
-            AnalysisAgent.AnalysisResult analyzed = analysisAgent.analyzeTables(genTables);
-            generationAgent.setPlan(analyzed.plan());
+        // 生成计划（配置驱动，复用 /generate 逻辑）；replan=false 时跳过 LLM 重规划
+        GenerationPlan plan = replan ? analysisAgent.analyzeTables(genTables).plan() : GenerationPlan.empty();
+        if (!replan) {
+            log.warn("replan=false：跳过分析规划，本次生成退回内置模板 fallback（计划不随请求传入）");
         }
 
         ProjectRules rules = rulesService.currentRules();
         // 增量生成：只生成用户显式表行数，父表 rowCount=0 → 引用现有（generateIncremental 内部处理）
         GenerationAgent.GenerationRequest incReq = new GenerationAgent.GenerationRequest(
                 genTables, rules, new LinkedHashMap<>(rows), IncrementalConfig.full(),
-                props.seed(), props.batchSize(), props.maxConcurrency());
+                props.seed(), props.batchSize(), props.maxConcurrency(), plan);
         GenerationAgent.GenerationResult result =
                 generationAgent.generateIncremental(incReq, baseline, cacheEnabled);
 

@@ -282,7 +282,7 @@ public final class ContentGen {
         }
 
         // P1 分支①：固定样本表（role/admin，语义硬编码，零 LLM）
-        if (expansion != null && expansion.isFixed(tableName)) {
+        if (expansion != null && expansion.isFixed(context.plan(), tableName)) {
             List<Map<String, Object>> fixedRows = FixedSamples.rows(
                     tableName, table.columns(), context.newRandom());
             List<DataRow> rows = fixedRows.stream()
@@ -297,7 +297,7 @@ public final class ContentGen {
         }
 
         // P1 分支②：展开表（派生表，锚点 + 蓝图规则实例化，零 LLM）
-        if (expansion != null && expansion.isExpanded(tableName)) {
+        if (expansion != null && expansion.isExpanded(context.plan(), tableName)) {
             List<DataRow> expanded = expansion.expand(table, context, completedData);
             injectPkValues(expanded, table); // 展开器行 id=null，注入骨架 PK
             // 通用化修复：语义列（商品名/规格等）由 LLM 批量回填（配置驱动通用，避免人名/占位）
@@ -610,7 +610,7 @@ public final class ContentGen {
      * 任一 llm 列值为 null → 抛异常。占位比失败危险——失败可见、可重生成，占位会静默污染数据。</p>
      */
     private void fillLlmColumns(TableMeta table, List<DataRow> rows) {
-        List<ColumnDef> llmCols = expansion.llmColumns(table);
+        List<ColumnDef> llmCols = expansion.llmColumns(context.plan(), table);
         if (llmCols.isEmpty() || rows.isEmpty()) return;
         List<Map<String, Object>> llmRows = fillRowsWithGapFill(table, llmCols, rows.size());
         for (int i = 0; i < rows.size(); i++) {
@@ -664,9 +664,9 @@ public final class ContentGen {
     /** rule 优先判定：plan 工具列 ∪ ColumnClassifier.RULE 列，减去语义字符串（防线） */
     private Set<String> ruleColumnNames(TableMeta table, List<String> fkCols) {
         Set<String> names = new HashSet<>();
-        // ① plan 工具列（mode != llm）：分析 agent 工具感知决策的工具
-        if (expansion != null && expansion.plan() != null) {
-            GenerationPlan.TablePlan tp = expansion.plan().tablePlan(table.name());
+        // ① plan 工具列（mode != llm）：分析 agent 工具感知决策的工具（计划随本次运行上下文传入）
+        if (expansion != null) {
+            GenerationPlan.TablePlan tp = context.plan().tablePlan(table.name());
             if (tp != null) {
                 for (GenerationPlan.ColumnPlan cp : tp.columns()) {
                     if (!"llm".equals(cp.mode())) names.add(cp.column());
