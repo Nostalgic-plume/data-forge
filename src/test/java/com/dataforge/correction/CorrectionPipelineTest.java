@@ -140,7 +140,7 @@ class CorrectionPipelineTest {
                 new GenerationAgent.GenerationRequest(List.of(user, orders, orderItem),
                         ProjectRules.withDefaultCorrectionRules(),
                         Map.of("user", 1, "orders", 1, "order_item", 1),
-                        IncrementalConfig.full(), 42L, 50, 4),
+                        IncrementalConfig.full(), 42L, 50, 4, null),
                 false);
 
         // 流水线结果（统计字段，验证修正确被触发）

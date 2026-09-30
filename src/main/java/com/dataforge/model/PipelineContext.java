@@ -77,6 +77,19 @@ public final class PipelineContext {
         existingPools.put(tableName, pkValues);
     }
 
+    // ===================== 生成计划（每次运行独立，禁放单例） =====================
+    // 分析 agent 产出的 GenerationPlan；随请求传入、随本次运行流转——
+    // 不在 ExpansionEngine（Spring 单例）上挂可变字段，否则并发运行互相覆盖计划（表分类/列模式错配）
+    private GenerationPlan plan = GenerationPlan.empty();
+
+    public GenerationPlan plan() {
+        return plan;
+    }
+
+    public void setPlan(GenerationPlan plan) {
+        this.plan = plan == null ? GenerationPlan.empty() : plan;
+    }
+
     // ===================== A1：逐表 PK 策略提示 =====================
     // SourceScanner @TableId 判定（ASSIGN_ID→SNOWFLAKE / AUTO→SEQUENTIAL），PkGen 消费，fallback 全局
     private final Map<String, String> pkStrategyHints = new LinkedHashMap<>();

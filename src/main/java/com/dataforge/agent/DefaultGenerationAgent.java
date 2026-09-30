@@ -41,13 +41,6 @@ public class DefaultGenerationAgent implements GenerationAgent {
         this.expansion = expansion;
     }
 
-    /** 设置生成计划（分析 agent 产出；空计划 = 内置模板 fallback，通用化配置驱动） */
-    public void setPlan(GenerationPlan plan) {
-        if (expansion != null) {
-            expansion.setPlan(plan);
-        }
-    }
-
     /** correctionRules 中 AGG_EQUAL 规则（生成侧回填消费；无则空） */
     private static List<ProjectRules.Rule> aggRules(ProjectRules rules) {
         if (rules == null || rules.correctionRules() == null) return List.of();
@@ -59,7 +52,7 @@ public class DefaultGenerationAgent implements GenerationAgent {
     /** A1：分析产出的逐表 PK 策略 hint（SourceScanner @TableId 判定）→ PkGen 消费（fallback 全局） */
     private void applyPkHints(PipelineContext context) {
         if (expansion == null) return;
-        GenerationPlan plan = expansion.plan();
+        GenerationPlan plan = context.plan();
         if (plan == null || plan.tables().isEmpty()) return;
         for (GenerationPlan.TablePlan tp : plan.tables()) {
             if (tp.pkStrategy() != null) {
@@ -88,6 +81,7 @@ public class DefaultGenerationAgent implements GenerationAgent {
                 props.pkStrategy(), props.cacheDir(), props.minParentRows(), props.maxIterations());
 
         PipelineContext context = new PipelineContext(req.tables(), req.rowCounts(), effective.seed());
+        context.setPlan(req.plan());   // 计划随本次运行流转（不放单例，避免并发运行互相覆盖）
         PkGen.Strategy strategy = effective.pkStrategy().equals("snowflake")
                 ? PkGen.Strategy.SNOWFLAKE : PkGen.Strategy.SEQUENTIAL;
         applyPkHints(context);   // A1：分析产出的逐表 PK 策略 hint → PkGen（fallback 全局）
@@ -141,6 +135,7 @@ public class DefaultGenerationAgent implements GenerationAgent {
             newRows.put(t.name(), req.rowCounts().getOrDefault(t.name(), 0));
         }
         PipelineContext context = new PipelineContext(req.tables(), newRows, effective.seed());
+        context.setPlan(req.plan());   // 计划随本次运行流转（不放单例，避免并发运行互相覆盖）
         // 增量上下文：起始 ID = 现有 MAX(id)+1；现有 PK 池（FK 跨现有引用）
         for (GeneratedData data : baseline.values()) {
             long maxId = data.rows().stream()

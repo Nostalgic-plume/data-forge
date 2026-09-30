@@ -92,14 +92,11 @@
             <scope>runtime</scope>
         </dependency>
         <!-- LangGraph4j：图编排（core 与 Spring Boot 3.5.x 零冲突）
-             注意：不引 langgraph4j-spring-ai——它依赖 spring-ai 2.x，会拉入 Spring Framework 7 + Jackson 3 -->
+             注意：不引 langgraph4j-spring-ai——它依赖 spring-ai 2.x，会拉入 Spring Framework 7 + Jackson 3
+             也暂不引 langgraph4j-mysql-saver——当前检查点用内存版，持久化（T6）落地时再加，避免无用依赖进构建产物 -->
         <dependency>
             <groupId>org.bsc.langgraph4j</groupId>
             <artifactId>langgraph4j-core</artifactId>
-        </dependency>
-        <dependency>
-            <groupId>org.bsc.langgraph4j</groupId>
-            <artifactId>langgraph4j-mysql-saver</artifactId>
         </dependency>
 
         <!-- 测试 -->
