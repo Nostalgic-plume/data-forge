@@ -159,4 +159,98 @@ class MetaRuleCompilerV2Test {
                         "fix_column", "nonexistent_col")),
                 List.of(ordersWithLogistics()), "shop_staging"), "fix_column 不存在应拒绝");
     }
+
+    // ---- EXPR_EQUAL（行内表达式一致性检查，docs/tech-debt-design.md 步骤 2） ----
+
+    /** orders + 四个金额列（actual 由表达式一致性检查，无任何规则校验它 → 本类型负责） */
+    private static TableMeta ordersWithAmounts() throws Exception {
+        String ddl = "CREATE TABLE orders ("
+                + " id BIGINT PRIMARY KEY AUTO_INCREMENT,"
+                + " total_amount DECIMAL(10,2) NOT NULL,"
+                + " discount_amount DECIMAL(10,2) NOT NULL DEFAULT 0.00,"
+                + " freight DECIMAL(10,2) NOT NULL DEFAULT 0.00,"
+                + " actual_amount DECIMAL(10,2) NOT NULL"
+                + ");";
+        return new DdlParser().parse(ddl).tables().get(0);
+    }
+
+    private ProjectRules.Rule exprRule(Map<String, String> params) {
+        return rule("orders", "actual_amount", "EXPR_EQUAL", params);
+    }
+
+    @Test
+    void exprEqualCompiles() throws Exception {
+        String sql = new MetaRuleCompiler().compileProjectRule(
+                exprRule(Map.of("expr", "total_amount - discount_amount + freight")),
+                List.of(ordersWithAmounts()), "shop_staging");
+        assertTrue(sql.contains("`total_amount` - `discount_amount` + `freight`"),
+                "标识符应全部反引号化: " + sql);
+        assertTrue(sql.contains("ABS(t.`actual_amount` - (`total_amount` - `discount_amount` + `freight`))"),
+                "应编译为实际值 vs 表达式期望值的差异检查: " + sql);
+        assertTrue(sql.contains("AS `expected`"), "差异行应带 expected 供修正侧消费");
+    }
+
+    @Test
+    void exprEqualRejectsMissingExpr() throws Exception {
+        assertThrows(IllegalStateException.class, () -> new MetaRuleCompiler().compileProjectRule(
+                exprRule(Map.of()), List.of(ordersWithAmounts()), "shop_staging"), "缺 expr 应拒绝");
+    }
+
+    @Test
+    void exprEqualRejectsIllegalChars() throws Exception {
+        // 注入符号一律编译期拒绝（不做"拼完再放行"）
+        for (String bad : List.of("total_amount; DROP TABLE orders", "total_amount = 1",
+                "total_amount' OR '1'='1")) {
+            assertThrows(IllegalStateException.class, () -> new MetaRuleCompiler().compileProjectRule(
+                    exprRule(Map.of("expr", bad)), List.of(ordersWithAmounts()), "shop_staging"),
+                    "非法字符应拒绝: " + bad);
+        }
+    }
+
+    @Test
+    void exprEqualRejectsSyntaxError() throws Exception {
+        // 字符集合法但语法不完整 → 统一包成 IllegalStateException，不把 ExpressionException 漏给调用方
+        assertThrows(IllegalStateException.class, () -> new MetaRuleCompiler().compileProjectRule(
+                exprRule(Map.of("expr", "total_amount +")),
+                List.of(ordersWithAmounts()), "shop_staging"), "语法错误应拒绝");
+    }
+
+    @Test
+    void exprEqualSupportsUnicodeColumnNames() throws Exception {
+        // 与生成侧解析器对齐（ExpressionEvaluator 用 Character.isLetter 判标识符，认 Unicode）：
+        // 中文列名必须可用，且被反引号包裹（放宽白名单但不放宽 IDENT 就会裸拼进 SQL）
+        TableMeta cn = new DdlParser().parse("CREATE TABLE t ("
+                + " id BIGINT PRIMARY KEY, `总额` DECIMAL(10,2), `优惠` DECIMAL(10,2), `实付` DECIMAL(10,2));")
+                .tables().get(0);
+        String sql = new MetaRuleCompiler().compileProjectRule(
+                new ProjectRules.Rule("t", "实付", "EXPR_EQUAL", "中文列名规则", 1.0,
+                        ProjectRules.Rule.Source.USER_OVERRIDE, Map.of("expr", "总额 - 优惠")),
+                List.of(cn), "shop_staging");
+        assertTrue(sql.contains("`总额` - `优惠`"), "Unicode 列名必须反引号包裹: " + sql);
+    }
+
+    @Test
+    void exprEqualRejectsNonIdentifierUnicode() throws Exception {
+        // 放宽只针对字母/数字类 Unicode：货币符号这类非标识符字符仍被白名单拒绝
+        assertThrows(IllegalStateException.class, () -> new MetaRuleCompiler().compileProjectRule(
+                exprRule(Map.of("expr", "total_amount - €")),
+                List.of(ordersWithAmounts()), "shop_staging"), "非标识符字符应拒绝");
+    }
+
+    @Test
+    void exprEqualRejectsColumnNotInTable() throws Exception {
+        // 标识符语法合法但表中无此列 → 同样拒绝（走 validateParams 的列存在性校验）
+        assertThrows(IllegalStateException.class, () -> new MetaRuleCompiler().compileProjectRule(
+                exprRule(Map.of("expr", "total_amount - nonexistent_col")),
+                List.of(ordersWithAmounts()), "shop_staging"), "表内不存在的列应拒绝");
+    }
+
+    @Test
+    void exprEqualRoundKeptAsFunction() throws Exception {
+        String sql = new MetaRuleCompiler().compileProjectRule(
+                exprRule(Map.of("expr", "round(total_amount - discount_amount, 2)")),
+                List.of(ordersWithAmounts()), "shop_staging");
+        assertTrue(sql.contains("round(`total_amount` - `discount_amount`, 2)"),
+                "函数名不得加反引号（MySQL 不允许），参数列要加: " + sql);
+    }
 }

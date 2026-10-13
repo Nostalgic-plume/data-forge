@@ -54,6 +54,9 @@ class SqlValidatorTest {
             if (sql.contains("GROUP BY") && sql.contains("HAVING")) {
                 return List.of();
             }
+            if (sql.contains("ABS(")) {   // EXPR_EQUAL 行内表达式一致性检查（AGG_EQUAL 不含 ABS）
+                return List.of(Map.of("id", 7L, "actual", 0.0, "expected", 88.0));
+            }
             if (sql.contains("SUM(`subtotal`)")) {
                 return List.of(
                         Map.of("id", 1L, "actual", 100.0, "expected", 200.0),
@@ -129,5 +132,41 @@ class SqlValidatorTest {
         assertTrue(fkSql.contains("`order_id`"), "FK 检查 SQL 应含外键列");
         // 受控 SQL：标识符反引号包裹
         assertTrue(fkSql.contains("`shop_staging`"), "SQL 应含 staging 库（反引号）");
+    }
+
+    // ---- EXPR_EQUAL（docs/tech-debt-design.md 步骤 2：actual_amount 一致性可被发现） ----
+
+    /** project_rules.json 中 orders.actual_amount 那条规则（表/列/表达式与实物一致） */
+    private static ProjectRules.Rule actualAmountRule() {
+        return new ProjectRules.Rule("orders", "actual_amount", "EXPR_EQUAL",
+                "实付金额 = 订单金额 - 优惠金额 + 运费", 1.0,
+                ProjectRules.Rule.Source.USER_OVERRIDE,
+                Map.of("expr", "total_amount - discount_amount + freight"));
+    }
+
+    @Test
+    void exprEqualRuleCompilesOnRealShopDdl() {
+        // 用真实 shop 表结构编译实物规则：列名对不上会在此抛（配置与 DDL 漂移的守卫）
+        String sql = new MetaRuleCompiler().compileProjectRule(actualAmountRule(), shopTables, "shop_staging");
+        assertTrue(sql.contains("ABS(t.`actual_amount` - (`total_amount` - `discount_amount` + `freight`))"),
+                "应编译为 actual_amount 与表达式的差异断言: " + sql);
+        assertTrue(sql.contains("AS `expected`"), "差异行应带 expected 供修正侧消费");
+    }
+
+    @Test
+    void detectsExprEqualMismatch() {
+        // 只放 orders 表 + 一条 EXPR_EQUAL 规则：验证规则真的被跑到并分桶（不是只编译不执行）
+        List<TableMeta> ordersOnly = shopTables.stream()
+                .filter(t -> t.name().equals("orders")).toList();
+        ProjectRules rules = new ProjectRules(List.of(), List.of(actualAmountRule()), List.of(), 1);
+        ValidationReport report = new SqlValidator(new FakeJdbc(), new MetaRuleCompiler(), fakeStaging())
+                .validate(ordersOnly, rules, "shop");
+
+        ValidationReport.Bucket expr = report.buckets().stream()
+                .filter(b -> b.errorType().equals("EXPR_EQUAL")).findFirst().orElseThrow(
+                        () -> new AssertionError("actual_amount 不一致必须被分桶发现，实际分桶: "
+                                + report.buckets().stream().map(ValidationReport.Bucket::errorType).toList()));
+        assertEquals(1, expr.count(), "1 行差异应计 1");
+        assertFalse(expr.rootCause().isBlank(), "分桶应带根因假设（喂修正 agent）");
     }
 }

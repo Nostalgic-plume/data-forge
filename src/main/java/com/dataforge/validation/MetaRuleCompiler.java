@@ -1,6 +1,8 @@
 package com.dataforge.validation;
 
 import com.dataforge.db.MysqlJdbcDataSource;
+import com.dataforge.derivation.ExpressionEvaluator;
+import com.dataforge.derivation.ExpressionException;
 import com.dataforge.model.ForeignKeyDef;
 import com.dataforge.model.ProjectRules;
 import com.dataforge.model.TableMeta;
@@ -8,6 +10,9 @@ import org.springframework.stereotype.Component;
 
 import java.util.Arrays;
 import java.util.List;
+import java.util.Set;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 
 /**
@@ -78,6 +83,7 @@ public class MetaRuleCompiler implements RuleCompiler {
     /**
      * 项目规则编译（P4 通用化：引擎按 type 编译，业务参数全部来自 rule.params，不写死表名）。
      * AGG_EQUAL：target.column = SUM(ref_table.sum_col GROUP BY ref_table.join_col 对 target.id)。
+     * EXPR_EQUAL：target.column = expr(同行其它列)（表达式为白名单四则运算）。
      * CUSTOM_SQL：LLM 产出校验 SQL，过结构闸门（SqlGate）后作为检查 SQL（tables 可为 null）。
      */
     @Override
@@ -88,6 +94,7 @@ public class MetaRuleCompiler implements RuleCompiler {
         validateParams(rule, table);   // 编译前参数结构校验（错参数拒绝 + 上报，不静默）
         return switch (rule.type()) {
             case "AGG_EQUAL" -> compileAggEqual(rule, staging);
+            case "EXPR_EQUAL" -> compileExprEqual(rule, staging);
             case "VALUE_RANGE" -> compileValueRange(rule, staging);
             case "NON_NULL" -> compileNonNull(rule, staging);
             case "FORMAT" -> compileFormat(rule, staging);
@@ -121,6 +128,23 @@ public class MetaRuleCompiler implements RuleCompiler {
                 Double maxV = parseDouble(max);
                 if (minV != null && maxV != null && minV > maxV) {
                     throw new IllegalStateException("VALUE_RANGE min(" + min + ") > max(" + max + ")");
+                }
+            }
+            case "EXPR_EQUAL" -> {
+                String expr = rule.params().get("expr");
+                if (expr == null || expr.isBlank()) {
+                    throw new IllegalStateException("EXPR_EQUAL 规则缺少参数 expr");
+                }
+                // 先过字符集白名单（非法字符统一在此拒绝），再做语法解析——顺序不可交换：
+                // 反过来的话 `a; DROP TABLE b` 会先撞解析器，错误类型/信息都不是护栏该给的
+                toSqlExpression(expr, rule);
+                if (table != null) {
+                    for (String c : ExpressionEvaluator.referencedColumns(expr)) {
+                        if (table.columns().stream().noneMatch(x -> x.name().equals(c))) {
+                            throw new IllegalStateException("EXPR_EQUAL 表达式引用列 `" + c
+                                    + "` 不存在于表 `" + rule.table() + "`");
+                        }
+                    }
                 }
             }
             case "FORMAT" -> {
@@ -175,6 +199,78 @@ public class MetaRuleCompiler implements RuleCompiler {
                 + staging + "." + refTable + " GROUP BY " + joinCol + ") e\n"
                 + "       ON t.`id` = e." + joinCol + "\n"
                 + "WHERE ABS(t." + targetCol + " - COALESCE(e.`expected`, 0)) > 0.01";
+    }
+
+    /**
+     * EXPR_EQUAL 校验 SQL：目标列 ≠ 同行表达式求值 → 差异行（含 id 与 expected，喂修正 agent）。
+     *
+     * <p>表达式与生成侧 {@link ExpressionEvaluator} 同语法（数字/列引用/四则运算/括号/round），
+     * 经 {@link #toSqlExpression} 做字符集白名单 + 标识符反引号化后才拼入 SQL——
+     * 非白名单字符一律编译期拒绝，不做"拼接后放行"。</p>
+     */
+    private String compileExprEqual(ProjectRules.Rule rule, String staging) {
+        String sqlExpr = toSqlExpression(param(rule, "expr"), rule);
+        String target = staging + "." + MysqlJdbcDataSource.quote(rule.table());
+        String col = MysqlJdbcDataSource.quote(rule.column());
+        return "SELECT t.`id` AS `id`, t." + col + " AS `actual`,\n"
+                + "       (" + sqlExpr + ") AS `expected`\n"
+                + "FROM " + target + " t\n"
+                + "WHERE ABS(t." + col + " - (" + sqlExpr + ")) > 0.01";
+    }
+
+    /**
+     * EXPR_EQUAL 表达式允许的字符集（列名/数字/四则运算/括号/逗号——逗号为 round(x,n) 预留）。
+     *
+     * <p>用 {@code \p{L}\p{N}} 而非 ASCII：生成侧 {@link ExpressionEvaluator} 的解析器以
+     * {@code Character.isLetter/isDigit} 判标识符（Unicode 全量），此处若只放行 ASCII 会造成
+     * 「生成侧能用、校验侧被拒」的能力割裂。</p>
+     */
+    private static final Pattern EXPR_ALLOWED =
+            Pattern.compile("^[\\p{L}\\p{N}_+\\-*/().,\\s]+$");
+
+    /**
+     * 表达式中的标识符（Unicode 字母/下划线开头，lookbehind 防从数字中间截断）。
+     * <b>必须与 {@link #EXPR_ALLOWED} 同口径放宽</b>——否则 Unicode 列名通过白名单却匹配不到，
+     * 会不被反引号包裹就拼进 SQL。
+     */
+    private static final Pattern EXPR_IDENT =
+            Pattern.compile("(?<![\\p{L}\\p{N}_])[\\p{L}_][\\p{L}\\p{N}_]*");
+
+    /** 表达式内允许原样保留的 SQL 函数名（不加反引号；MySQL 不允许反引号包裹函数名） */
+    private static final Set<String> EXPR_FUNCS = Set.of("round");
+
+    /**
+     * 表达式 → SQL 表达式：字符集白名单 + 语法校验（复用生成侧解析器）+ 标识符反引号化。
+     * 出现白名单外的标识符（既非列引用也非允许函数）→ 抛，不做静默透传。
+     */
+    private static String toSqlExpression(String expr, ProjectRules.Rule rule) {
+        if (!EXPR_ALLOWED.matcher(expr).matches()) {
+            throw new IllegalStateException("EXPR_EQUAL 表达式含非法字符（仅允许列名/数字/+-*/()）: " + expr);
+        }
+        Set<String> refs;
+        try {
+            refs = ExpressionEvaluator.referencedColumns(expr);   // 语法校验：非法语法在此抛
+        } catch (ExpressionException e) {
+            throw new IllegalStateException("EXPR_EQUAL 表达式语法错误（规则 " + rule.table() + "."
+                    + rule.column() + "）: " + e.getMessage(), e);
+        }
+        Matcher m = EXPR_IDENT.matcher(expr);
+        StringBuilder sb = new StringBuilder();
+        while (m.find()) {
+            String id = m.group();
+            String replacement;
+            if (EXPR_FUNCS.contains(id.toLowerCase())) {
+                replacement = id;
+            } else if (refs.contains(id)) {
+                replacement = "`" + id + "`";
+            } else {
+                throw new IllegalStateException("EXPR_EQUAL 表达式含未声明标识符 `" + id
+                        + "`（规则 " + rule.table() + "." + rule.column() + "）");
+            }
+            m.appendReplacement(sb, Matcher.quoteReplacement(replacement));
+        }
+        m.appendTail(sb);
+        return sb.toString();
     }
 
     /** VALUE_RANGE 校验 SQL：列超出 [min,max] 即问题行（单侧边界也支持） */
