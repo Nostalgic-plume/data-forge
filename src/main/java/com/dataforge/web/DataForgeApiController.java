@@ -333,16 +333,21 @@ public class DataForgeApiController {
             try {
                 GenerationPlan loaded = objectMapper.readValue(pf.toFile(), GenerationPlan.class);
                 if (loaded != null && !loaded.tables().isEmpty()) {
-                    Set<String> planned = loaded.tables().stream()
-                            .map(GenerationPlan.TablePlan::table).collect(Collectors.toSet());
-                    List<String> missing = genTables.stream().map(TableMeta::name)
-                            .filter(n -> !planned.contains(n)).toList();
-                    if (missing.isEmpty()) {
-                        log.info("加载落盘生成计划 generation-plan.json（{} 表），跳过现场分析",
-                                loaded.tables().size());
+                    Set<String> names = genTables.stream().map(TableMeta::name)
+                            .collect(Collectors.toSet());
+                    // 判定"计划适用于本次生成"：只要求与本次表集有交集。
+                    // 计划里多出的表无害（GenerationAgent 只按 genTables 逐表查 tablePlan），
+                    // 计划里缺少的表同样合法（走内置展开器 / FixedSamples fallback）。
+                    // 两者都不能作为回退条件——否则"只生成部分表"就会静默绕过人工确认的计划。
+                    long overlap = loaded.tables().stream()
+                            .map(GenerationPlan.TablePlan::table)
+                            .filter(names::contains).count();
+                    if (overlap > 0) {
+                        log.info("加载落盘生成计划 generation-plan.json（共 {} 表，本次命中 {} 表），跳过现场分析",
+                                loaded.tables().size(), overlap);
                         return loaded;
                     }
-                    log.warn("落盘计划未覆盖本次全部表（缺 {}），回退现场分析", missing);
+                    log.warn("落盘计划与本次生成范围 {} 无交集，回退现场分析", names);
                 }
             } catch (Exception e) {
                 log.warn("generation-plan.json 解析失败（回退现场分析）: {}", e.getMessage());
