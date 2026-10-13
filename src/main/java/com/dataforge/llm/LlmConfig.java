@@ -4,9 +4,11 @@ import org.springframework.ai.chat.client.ChatClient;
 import org.springframework.ai.openai.OpenAiChatModel;
 import org.springframework.ai.openai.OpenAiChatOptions;
 import org.springframework.ai.openai.api.OpenAiApi;
+import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.context.annotation.Primary;
 
 /**
  * LLM 装配链（P8 主备双链路 + 可靠性装饰器，真实模式）。
@@ -60,10 +62,18 @@ public class LlmConfig {
         return new RealLlmClient(backupChatClient);
     }
 
-    /** 最终 DataLlm：主链路外包 Timeout → CircuitBreaker → Failover(备)；熔断快速失败由上层降批/失败表隔离兜底 */
+    /**
+     * 最终 DataLlm：主链路外包 Timeout → CircuitBreaker → Failover(备)；熔断快速失败由上层降批/失败表隔离兜底。
+     *
+     * <p>容器内有 3 个 DataLlm 类型 bean（primaryLlm / backupLlm / dataLlm），必须显式标注
+     * {@code @Primary} 供外部（DefaultAnalysisAgent 等）注入最终链路；同时本方法的两个参数必须
+     * 用 {@code @Qualifier} 精确指定——否则参数解析会被自身的 {@code @Primary} 吸附，形成自注入循环依赖。</p>
+     */
     @Bean
+    @Primary
     @ConditionalOnProperty(name = "dataforge.mock-llm", havingValue = "false", matchIfMissing = true)
-    public DataLlm dataLlm(DataLlm primaryLlm, DataLlm backupLlm) {
+    public DataLlm dataLlm(@Qualifier("primaryLlm") DataLlm primaryLlm,
+                           @Qualifier("backupLlm") DataLlm backupLlm) {
         return new FailoverLlmClient(
                 new CircuitBreakerLlmClient(new TimeoutLlmClient(primaryLlm)),
                 backupLlm);
