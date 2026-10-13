@@ -1,8 +1,8 @@
 package com.dataforge.validation;
 
 import com.dataforge.db.MysqlJdbcDataSource;
+import com.dataforge.derivation.ExprSql;
 import com.dataforge.derivation.ExpressionEvaluator;
-import com.dataforge.derivation.ExpressionException;
 import com.dataforge.model.ForeignKeyDef;
 import com.dataforge.model.ProjectRules;
 import com.dataforge.model.TableMeta;
@@ -10,9 +10,6 @@ import org.springframework.stereotype.Component;
 
 import java.util.Arrays;
 import java.util.List;
-import java.util.Set;
-import java.util.regex.Matcher;
-import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 
 /**
@@ -137,7 +134,7 @@ public class MetaRuleCompiler implements RuleCompiler {
                 }
                 // 先过字符集白名单（非法字符统一在此拒绝），再做语法解析——顺序不可交换：
                 // 反过来的话 `a; DROP TABLE b` 会先撞解析器，错误类型/信息都不是护栏该给的
-                toSqlExpression(expr, rule);
+                ExprSql.toSql(expr, exprWhere(rule));
                 if (table != null) {
                     for (String c : ExpressionEvaluator.referencedColumns(expr)) {
                         if (table.columns().stream().noneMatch(x -> x.name().equals(c))) {
@@ -204,12 +201,12 @@ public class MetaRuleCompiler implements RuleCompiler {
     /**
      * EXPR_EQUAL 校验 SQL：目标列 ≠ 同行表达式求值 → 差异行（含 id 与 expected，喂修正 agent）。
      *
-     * <p>表达式与生成侧 {@link ExpressionEvaluator} 同语法（数字/列引用/四则运算/括号/round），
-     * 经 {@link #toSqlExpression} 做字符集白名单 + 标识符反引号化后才拼入 SQL——
-     * 非白名单字符一律编译期拒绝，不做"拼接后放行"。</p>
+     * <p>表达式与生成侧 {@link ExpressionEvaluator} 同语法，经 {@link ExprSql#toSql} 做字符集
+     * 白名单 + 标识符反引号化后才拼入 SQL——非法字符与未声明标识符一律编译期拒绝。
+     * 翻译实现在校验侧与修正侧<b>共用一份</b>（见 {@code CorrectionSqls}），避免语法漂移。</p>
      */
     private String compileExprEqual(ProjectRules.Rule rule, String staging) {
-        String sqlExpr = toSqlExpression(param(rule, "expr"), rule);
+        String sqlExpr = ExprSql.toSql(param(rule, "expr"), exprWhere(rule));
         String target = staging + "." + MysqlJdbcDataSource.quote(rule.table());
         String col = MysqlJdbcDataSource.quote(rule.column());
         return "SELECT t.`id` AS `id`, t." + col + " AS `actual`,\n"
@@ -218,59 +215,9 @@ public class MetaRuleCompiler implements RuleCompiler {
                 + "WHERE ABS(t." + col + " - (" + sqlExpr + ")) > 0.01";
     }
 
-    /**
-     * EXPR_EQUAL 表达式允许的字符集（列名/数字/四则运算/括号/逗号——逗号为 round(x,n) 预留）。
-     *
-     * <p>用 {@code \p{L}\p{N}} 而非 ASCII：生成侧 {@link ExpressionEvaluator} 的解析器以
-     * {@code Character.isLetter/isDigit} 判标识符（Unicode 全量），此处若只放行 ASCII 会造成
-     * 「生成侧能用、校验侧被拒」的能力割裂。</p>
-     */
-    private static final Pattern EXPR_ALLOWED =
-            Pattern.compile("^[\\p{L}\\p{N}_+\\-*/().,\\s]+$");
-
-    /**
-     * 表达式中的标识符（Unicode 字母/下划线开头，lookbehind 防从数字中间截断）。
-     * <b>必须与 {@link #EXPR_ALLOWED} 同口径放宽</b>——否则 Unicode 列名通过白名单却匹配不到，
-     * 会不被反引号包裹就拼进 SQL。
-     */
-    private static final Pattern EXPR_IDENT =
-            Pattern.compile("(?<![\\p{L}\\p{N}_])[\\p{L}_][\\p{L}\\p{N}_]*");
-
-    /** 表达式内允许原样保留的 SQL 函数名（不加反引号；MySQL 不允许反引号包裹函数名） */
-    private static final Set<String> EXPR_FUNCS = Set.of("round");
-
-    /**
-     * 表达式 → SQL 表达式：字符集白名单 + 语法校验（复用生成侧解析器）+ 标识符反引号化。
-     * 出现白名单外的标识符（既非列引用也非允许函数）→ 抛，不做静默透传。
-     */
-    private static String toSqlExpression(String expr, ProjectRules.Rule rule) {
-        if (!EXPR_ALLOWED.matcher(expr).matches()) {
-            throw new IllegalStateException("EXPR_EQUAL 表达式含非法字符（仅允许列名/数字/+-*/()）: " + expr);
-        }
-        Set<String> refs;
-        try {
-            refs = ExpressionEvaluator.referencedColumns(expr);   // 语法校验：非法语法在此抛
-        } catch (ExpressionException e) {
-            throw new IllegalStateException("EXPR_EQUAL 表达式语法错误（规则 " + rule.table() + "."
-                    + rule.column() + "）: " + e.getMessage(), e);
-        }
-        Matcher m = EXPR_IDENT.matcher(expr);
-        StringBuilder sb = new StringBuilder();
-        while (m.find()) {
-            String id = m.group();
-            String replacement;
-            if (EXPR_FUNCS.contains(id.toLowerCase())) {
-                replacement = id;
-            } else if (refs.contains(id)) {
-                replacement = "`" + id + "`";
-            } else {
-                throw new IllegalStateException("EXPR_EQUAL 表达式含未声明标识符 `" + id
-                        + "`（规则 " + rule.table() + "." + rule.column() + "）");
-            }
-            m.appendReplacement(sb, Matcher.quoteReplacement(replacement));
-        }
-        m.appendTail(sb);
-        return sb.toString();
+    /** 抛错信息里的规则定位（"哪条规则写错了"比"表达式错了"有用得多） */
+    private static String exprWhere(ProjectRules.Rule rule) {
+        return "规则 " + rule.table() + "." + rule.column();
     }
 
     /** VALUE_RANGE 校验 SQL：列超出 [min,max] 即问题行（单侧边界也支持） */

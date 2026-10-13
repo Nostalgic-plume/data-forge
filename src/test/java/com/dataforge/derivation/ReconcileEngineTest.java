@@ -70,8 +70,7 @@ class ReconcileEngineTest {
         Map<String, GeneratedData> data = new LinkedHashMap<>();
         data.put("orders", orders());
         data.put("order_item", orderItem());
-        boolean applied = ReconcileEngine.apply(data, List.of(agg()));
-        assertTrue(applied, "存在可应用规则应返回 true");
+        ReconcileEngine.apply(data, List.of(agg()));
 
         GeneratedData orders = data.get("orders");
         // id1: 10+20=30.00；id2: 5.00；id3: 无明细 → 0.00
@@ -84,29 +83,32 @@ class ReconcileEngineTest {
     }
 
     @Test
-    void ref表不在生成集_跳过返回false不抛() {
+    void ref表不在生成集_整体跳过不改数据() {
         Map<String, GeneratedData> data = new LinkedHashMap<>();
         data.put("orders", orders());   // 无 order_item
-        assertFalse(ReconcileEngine.apply(data, List.of(agg())));
+        ReconcileEngine.apply(data, List.of(agg()));
+        assertNull(data.get("orders").rows().get(0).values().get("total_amount"),
+                "ref 表缺失时应整体跳过，不得半途改数据");
     }
 
     @Test
-    void 空规则或null_返回false() {
-        Map<String, GeneratedData> data = Map.of("orders", orders());
-        assertFalse(ReconcileEngine.apply(data, List.of()));
-        assertFalse(ReconcileEngine.apply(data, null));
-        assertFalse(ReconcileEngine.apply(null, List.of(agg())));
+    void 空规则或null_安全跳过不抛() {
+        Map<String, GeneratedData> data = new LinkedHashMap<>();
+        data.put("orders", orders());
+        ReconcileEngine.apply(data, List.of());
+        ReconcileEngine.apply(data, null);
+        ReconcileEngine.apply(null, List.of(agg()));
+        assertNull(data.get("orders").rows().get(0).values().get("total_amount"), "无规则时不应改数据");
     }
 
     @Test
-    void 非AGG规则被忽略() {
+    void 非回填类型规则被忽略() {
         Map<String, GeneratedData> data = new LinkedHashMap<>();
         data.put("orders", orders());
         data.put("order_item", orderItem());
         ProjectRules.Rule other = ProjectRules.Rule.simple("orders", "status", "ENUM_WEIGHT",
                 "状态权重", 0.8, ProjectRules.Rule.Source.AGENT);
-        boolean applied = ReconcileEngine.apply(data, List.of(other));
-        assertFalse(applied);
+        ReconcileEngine.apply(data, List.of(other));
         assertNull(data.get("orders").rows().get(0).values().get("total_amount"), "total 应保持未填");
     }
 
@@ -150,7 +152,7 @@ class ReconcileEngineTest {
         Map<String, GeneratedData> data = new LinkedHashMap<>();
         data.put("orders", amounts());
         data.put("order_item", orderItem());
-        assertTrue(ReconcileEngine.apply(data, List.of(agg(), expr())));
+        ReconcileEngine.apply(data, List.of(agg(), expr()));
 
         GeneratedData orders = data.get("orders");
         // total 由 AGG 回填：30.00 / 5.00 / 0.00 → actual = total - discount + freight
@@ -197,19 +199,23 @@ class ReconcileEngineTest {
                 ProjectRules.Rule.simple("orders", "pay_time", "STATUS_FLOW", "时间线", 0.9,
                         ProjectRules.Rule.Source.AGENT),
                 expr());
-        assertTrue(ReconcileEngine.apply(data, mixed), "混合列表中 AGG 应生效");
+        ReconcileEngine.apply(data, mixed);
         assertBd("32.00", data.get("orders").rows().get(0).values().get("actual_amount"),
                 "混合列表中 EXPR 也应生效");
     }
 
     @Test
-    void 仅EXPR规则_返回值不冒充AGG已接管() {
+    void 仅EXPR规则_只回填行内列不越界动跨表列() {
         Map<String, GeneratedData> data = new LinkedHashMap<>();
         data.put("orders", amounts());
-        // 无 order_item → AGG 无法回填；EXPR 成功也不得让返回值变 true
-        // （该返回值专指"跨表聚合已接管"；混入行内表达式的成功会让调用方误判 total 已有着落）
-        assertFalse(ReconcileEngine.apply(data, List.of(expr())),
-                "EXPR 的成功语义不是 total 已被接管");
+        // 无 order_item → 跨表聚合无处可算；EXPR 只应负责自己那条行内列
+        ReconcileEngine.apply(data, List.of(expr()));
+        GeneratedData orders = data.get("orders");
+        assertEquals(0.0, ((Number) orders.rows().get(0).values().get("total_amount")).doubleValue(),
+                "没有 AGG 规则时 total 应保持展开器的占位 0（不得被行内表达式顺手改掉）");
+        // total 仍为占位 0：0 - 10 + 12 = 2.00
+        assertBd("2.00", orders.rows().get(0).values().get("actual_amount"),
+                "actual 由 EXPR 按行内表达式算出");
     }
 
     private static void assertBd(String expected, Object actual, String message) {
