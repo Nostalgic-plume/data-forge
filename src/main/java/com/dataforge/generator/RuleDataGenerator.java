@@ -19,7 +19,20 @@ public final class RuleDataGenerator {
 
     private static final Faker FAKER = new Faker(Locale.CHINA);
 
+    /** picsum 占位图 seed 上界（随机种子，降低 URL 重复） */
+    private static final int PICSUM_SEED_BOUND = 10000;
+
     private RuleDataGenerator() {}
+
+    /**
+     * picsum 占位图 URL（400×400）。
+     *
+     * <p>原先在"images 多图"与"单图 logo/avatar"两个分支各拼接一次同一模板，
+     * 调整尺寸或换占位服务时容易只改一处。</p>
+     */
+    private static String picsumUrl(Random rng) {
+        return "https://picsum.photos/seed/" + rng.nextInt(PICSUM_SEED_BOUND) + "/400/400";
+    }
 
     /**
      * 为规则列生成行值（每行一个 Map：列名 → 值）。
@@ -351,8 +364,7 @@ public final class RuleDataGenerator {
             StringBuilder sb = new StringBuilder("[");
             for (int i = 0; i < count; i++) {
                 if (i > 0) sb.append(", ");
-                sb.append('"').append("https://picsum.photos/seed/")
-                        .append(rng.nextInt(10000)).append("/400/400").append('"');
+                sb.append('"').append(picsumUrl(rng)).append('"');
             }
             return sb.append(']').toString();
         }
@@ -360,7 +372,7 @@ public final class RuleDataGenerator {
                 || name.equals("logo") || name.equals("shop_logo")
                 || name.endsWith("_image") || name.endsWith("_img")
                 || name.endsWith("_pic") || name.endsWith("_logo")) {
-            return "https://picsum.photos/seed/" + rng.nextInt(10000) + "/400/400";
+            return picsumUrl(rng);
         }
         // IP
         if (name.equals("ip") || name.equals("ip_address")) {

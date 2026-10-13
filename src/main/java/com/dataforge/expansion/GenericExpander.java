@@ -5,6 +5,7 @@ import com.dataforge.derivation.ExpressionException;
 import com.dataforge.expansion.primitive.CountDistribution;
 import com.dataforge.model.*;
 import com.dataforge.model.PipelineContext;
+import net.datafaker.Faker;
 import org.springframework.stereotype.Component;
 
 import java.math.BigDecimal;
@@ -28,6 +29,9 @@ public class GenericExpander {
 
     private static final org.slf4j.Logger log =
             org.slf4j.LoggerFactory.getLogger(GenericExpander.class);
+
+    /** 通用假数据源（与 RuleDataGenerator 同款用法）：格式串列走 Faker，不参与 seed 复现 */
+    private static final Faker FAKER = new Faker(Locale.CHINA);
 
     /**
      * 行上下文：该行属于哪个父行、在父行内的序号。
@@ -394,7 +398,7 @@ public class GenericExpander {
         return switch (type) {
             case "phone" -> ValuePools.randomPhone(rng);
             case "address" -> ValuePools.randomAddress(rng);
-            case "email" -> "user" + (1000 + rng.nextInt(9000)) + "@qq.com";
+            case "email" -> FAKER.internet().emailAddress();
             case "remark" -> ValuePools.randomRemark(rng);
             case "logistics" -> ValuePools.randomLogisticsNo(rng);
             default -> ValuePools.randomChineseName(rng);
