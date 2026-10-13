@@ -138,12 +138,13 @@ public class GenericExpander {
                 yield fkValue(cp, completedData, rng, rowCtx, rowValues);
             }
             case "alternate" -> alternateValue(cp, rowCtx);
+            case "chain" -> chainValue(cp, rowCtx);
             case "anchorPrice" -> anchorPriceValue(cp, completedData, rng);
             case "seq" -> seqValue(cp, index, seqStart);
             case "weighted" -> weightedValue(cp, rng);
             case "enum" -> enumValue(cp, table, rng);
             case "pool" -> poolValue(cp, rng);
-            case "date" -> dateValue(cp, rng);
+            case "date" -> dateValue(cp, rng, rowCtx);
             case "unique" -> seqValue(cp, index, seqStart);
             case "faker" -> fakerValue(cp, table, rng);
             case "valueRange" -> valueRangeValue(cp, rng);
@@ -416,14 +417,47 @@ public class GenericExpander {
         return w;
     }
 
-    /** 日期：params.range="-90d,0d"（相对今天的天数区间） */
-    private String dateValue(GenerationPlan.ColumnPlan cp, Random rng) {
+    /**
+     * 日期：params.range="-90d,0d"（相对今天的天数区间）。
+     * {@code params.ordered=true} 时按父行内序号递增——"链"类列（如状态日志）的语义要求
+     * 时间维度上也有序，否则按时间排出来的链依然是散的。
+     */
+    private String dateValue(GenerationPlan.ColumnPlan cp, Random rng, RowCtx rowCtx) {
         String range = cp.param("range");
         int pastDays = 90;
         if (range != null && range.contains(",")) {
             pastDays = Math.abs(parseInt(range.split(",")[0].trim().replace("d", ""), 90));
         }
+        if ("true".equals(cp.param("ordered")) && rowCtx != null && rowCtx.indexInParent() >= 0) {
+            return ValuePools.orderedDateTime(pastDays, rowCtx.indexInParent(), rng);
+        }
         return ValuePools.randomDateTime(pastDays, rng);
+    }
+
+    /**
+     * 状态链推进：按父行内序号沿 {@code path} 前进——第 i 行取 {@code path[i + offset]}，
+     * 越过尾部则停在末尾（<b>不回绕</b>）。
+     *
+     * <p>用于"跨行必须首尾相接"的列：如 user_status_log 的 from_status/to_status 应构成
+     * {@code 1→2→3→3} 这样连续的链。与 {@link #alternateValue} 的区别正在于此——后者取模轮转，
+     * 链会绕回开头、接不上（实测：两者独立随机会让每条日志的开头对不上上一条的结尾）。</p>
+     *
+     * <p>params：{@code path="1,2,3"}、{@code offset="0|1"}（0 取当前节点、1 取下一节点）。
+     * 无父行上下文时退化为取 path 首部，与既有模式口径一致。</p>
+     */
+    private Object chainValue(GenerationPlan.ColumnPlan cp, RowCtx rowCtx) {
+        String path = cp.param("path");
+        if (path == null || path.isBlank()) return null;
+        String[] nodes = path.split(",");
+        int offset = parseInt(cp.param("offset"), 0);
+        int idx = rowCtx != null && rowCtx.indexInParent() >= 0 ? rowCtx.indexInParent() : 0;
+        int pos = Math.min(Math.max(idx + offset, 0), nodes.length - 1);
+        String raw = nodes[pos].trim();
+        try {
+            return Integer.parseInt(raw);   // 状态码等数值列落库为整型，避免依赖隐式转换
+        } catch (NumberFormatException e) {
+            return raw;                     // 非数值路径（字符串状态）原样返回
+        }
     }
 
     /**

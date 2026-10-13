@@ -25,6 +25,8 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayDeque;
+import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.Deque;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
@@ -35,6 +37,7 @@ import java.util.Set;
 import java.util.stream.Collectors;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
@@ -130,6 +133,34 @@ class PlanDrivenExpansionTest {
         DataValidator.ValidationSummary summary = DataValidator.validate(
                 closure(CART_LINK.keySet()).stream().toList(), data, Set.of());
         assertEquals(0, summary.fkOrphanCount(), "cart 的 user_id/product_id/sku_id 不应悬挂");
+    }
+
+    @Test
+    void 状态日志按时间排列后首尾相接() throws Exception {
+        // 校验规则查的就是这个：每条日志的开头必须等于上一条的结尾。
+        // 原先 from_status / to_status 各自 weighted 随机 → 每行内部就不自洽、行间更接不上。
+        Map<String, Integer> requested = Map.of("user", 15, "user_status_log", 45);
+        Map<String, GeneratedData> data = generate(realPlan(), requested);
+
+        Map<Object, List<DataRow>> byUser = new LinkedHashMap<>();
+        for (DataRow row : data.get("user_status_log").rows()) {
+            byUser.computeIfAbsent(row.values().get("user_id"), k -> new ArrayList<>()).add(row);
+        }
+        assertFalse(byUser.isEmpty(), "应有状态日志");
+
+        int checked = 0;
+        for (Map.Entry<Object, List<DataRow>> e : byUser.entrySet()) {
+            List<DataRow> logs = e.getValue();
+            // create_time 是 yyyy-MM-dd HH:mm:ss，字典序即时间序
+            logs.sort(Comparator.comparing(r -> String.valueOf(r.values().get("create_time"))));
+            for (int i = 1; i < logs.size(); i++) {
+                assertEquals(logs.get(i - 1).values().get("to_status"),
+                        logs.get(i).values().get("from_status"),
+                        "用户 " + e.getKey() + " 第 " + i + " 条日志的开头应接上上一条的结尾");
+                checked++;
+            }
+        }
+        assertTrue(checked > 0, "至少应检查到一处衔接");
     }
 
     @Test

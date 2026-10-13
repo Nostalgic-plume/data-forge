@@ -78,6 +78,26 @@ public final class ValuePools {
                 .format(new Date(now - (long) (rng.nextDouble() * span)));
     }
 
+    /**
+     * 有序时间：同一父行内按序号 {@code idx} 递增（idx 越大越晚），整组仍落在
+     * {@code [now - pastDays, now]} 区间内。
+     *
+     * <p>用于"首尾相接的链"类列——如 user_status_log 按时间排出的状态链：只用
+     * {@link #randomDateTime} 的话每条时间独立随机，链在时间维度上就是散的。</p>
+     *
+     * <p>实现：把区间按序号切段，段内再取随机点。{@code idx >= pastDays} 时钳在末段
+     * （不再保证严格递增，但仍在有效区间内）。</p>
+     */
+    public static String orderedDateTime(int pastDays, int idx, Random rng) {
+        long now = System.currentTimeMillis();
+        int span = Math.max(1, pastDays);
+        double slot = (double) Math.min(Math.max(idx, 0), span - 1) / span;
+        double jitter = rng.nextDouble() / span;          // 段内抖动，不跨段
+        long offset = (long) ((slot + jitter) * span * 24 * 3600_000L);
+        return new SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.CHINA)
+                .format(new Date(now - (long) span * 24 * 3600_000L + offset));
+    }
+
     /** create 之后 1h~30d 的晚时间 */
     public static String laterDateTime(String createTime, Random rng) {
         try {
