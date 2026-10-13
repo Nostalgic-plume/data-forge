@@ -498,12 +498,19 @@ public final class ContentGen {
         }
     }
 
+    /** 批次随机源盐值：表名 + 起始行号（表间、批次间均不重复，且与执行顺序无关 → 结果可复现） */
+    private static long batchSalt(String tableName, int startRow) {
+        return (long) tableName.hashCode() * 1_000_003L + startRow;
+    }
+
     private BatchResult generateBatchOnce(TableMeta table, List<ColumnDef> localRuleCols,
                                           List<ColumnDef> llmCols, Map<String, List<Object>> usableFkAlloc,
                                           String parentContext, int startRow, int count) {
         // 1. 规则列（确定性）→ 2. PK 骨架 + FK 预分配注入（定位 startRow）
+        //    随机源按"表 + 批起点"派生：各批必须拿到不同序列，否则每批本地列整批重复
+        //    （见 PipelineContext#newRandom(long)）
         List<Map<String, Object>> ruleRows = RuleDataGenerator.generateRuleValues(
-                localRuleCols, count, context.newRandom());
+                localRuleCols, count, context.newRandom(batchSalt(table.name(), startRow)));
         injectPkAndFk(ruleRows, table, usableFkAlloc, startRow);
 
         // 3. LLM 语义列（父表上下文 + 前置约束注入，决策 #21）
@@ -520,7 +527,7 @@ public final class ContentGen {
             int gap = count - got;
             if (gap * 100 > count * GAP_ACCEPT_RATIO * 100) {
                 List<Map<String, Object>> gapRuleRows = RuleDataGenerator.generateRuleValues(
-                        localRuleCols, gap, context.newRandom());
+                        localRuleCols, gap, context.newRandom(batchSalt(table.name(), startRow + got)));
                 injectPkAndFk(gapRuleRows, table, usableFkAlloc, startRow + got);
                 List<Map<String, Object>> gapLlmRows = llm.generateRows(table.name(), llmCols, gap, promptContext);
                 llmCalls++;

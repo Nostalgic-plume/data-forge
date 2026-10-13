@@ -344,6 +344,18 @@ public final class RuleDataGenerator {
                 || name.endsWith("_email") || name.endsWith("_mail")) {
             return FAKER.internet().emailAddress();
         }
+        // 用户名：登录名，格式规范即可（user_ + 8 位 base36，碰撞概率极低到可忽略）
+        if (name.equals("username") || name.endsWith("_username")) {
+            return "user_" + Long.toString(Math.abs(rng.nextLong()), 36).substring(0, 8);
+        }
+        // 昵称：中文组合昵称（无唯一约束，重复无妨）
+        if (name.equals("nickname") || name.endsWith("_nickname")) {
+            String[] prefix = {"爱笑的", "快乐的", "安静的", "奔跑的", "温柔的",
+                    "认真的", "自由的", "简单的", "贪吃的", "爱做梦的"};
+            String[] suffix = {"小鱼", "猫咪", "路人", "星星", "阿福",
+                    "小满", "桃子", "山河", "柚子", "小鹿"};
+            return prefix[rng.nextInt(prefix.length)] + suffix[rng.nextInt(suffix.length)];
+        }
         // 身份证号
         if (name.contains("id_card") || name.contains("idcard")
                 || name.equals("identity_card") || name.equals("id_no")
