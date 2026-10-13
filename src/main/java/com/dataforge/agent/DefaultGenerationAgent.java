@@ -41,12 +41,14 @@ public class DefaultGenerationAgent implements GenerationAgent {
         this.expansion = expansion;
     }
 
-    /** correctionRules 中 AGG_EQUAL 规则（生成侧回填消费；无则空） */
-    private static List<ProjectRules.Rule> aggRules(ProjectRules rules) {
+    /**
+     * correctionRules 全量下传，<b>不在调用侧筛类型</b>——哪些规则被消费由
+     * {@link ReconcileEngine} 自己按 type 判定。调用侧多一次筛选就多一处"新增规则类型时漏筛"
+     * 的接线点，而漏筛是静默失败（规则在文件里、却从未生效）。
+     */
+    private static List<ProjectRules.Rule> correctionRules(ProjectRules rules) {
         if (rules == null || rules.correctionRules() == null) return List.of();
-        return rules.correctionRules().stream()
-                .filter(r -> "AGG_EQUAL".equals(r.type()))
-                .toList();
+        return rules.correctionRules();
     }
 
     /** A1：分析产出的逐表 PK 策略 hint（SourceScanner @TableId 判定）→ PkGen 消费（fallback 全局） */
@@ -96,7 +98,7 @@ public class DefaultGenerationAgent implements GenerationAgent {
         Map<String, GeneratedData> data = outcome.results().entrySet().stream()
                 .collect(Collectors.toMap(Map.Entry::getKey, e -> e.getValue().data()));
         // 通用聚合回填（AGG_EQUAL 规则驱动，一份规则两处复用）→ legacy Reconciliation 兜底行内/actual
-        boolean aggApplied = ReconcileEngine.apply(data, aggRules(req.rules()));
+        boolean aggApplied = ReconcileEngine.apply(data, correctionRules(req.rules()));
         Reconciliation.reconcile(data, aggApplied);
 
         Map<String, Integer> actualCounts = new LinkedHashMap<>();
@@ -179,7 +181,7 @@ public class DefaultGenerationAgent implements GenerationAgent {
             data.put(t.name(), new GeneratedData(t.name(), t.columns(), allRows));
         }
         // 跨现有对账（AGG 规则驱动优先；现有金额正确行重算不变，不误伤）
-        boolean aggApplied = ReconcileEngine.apply(data, aggRules(req.rules()));
+        boolean aggApplied = ReconcileEngine.apply(data, correctionRules(req.rules()));
         Reconciliation.reconcile(data, aggApplied);
 
         Map<String, Integer> actualCounts = new LinkedHashMap<>();
