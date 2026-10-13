@@ -368,6 +368,19 @@ public final class RuleDataGenerator {
             }
             return sb.append(']').toString();
         }
+        // 商品规格 JSON（name 的结构化重述）：交给 LLM 生成内嵌 JSON 会因转义不可靠而撑破外层结构，
+        //   实测会导致整表失败——这类"结构固定"的列由本地确定性构造，只是值随机。
+        if (name.equals("specs") || name.endsWith("_specs")) {
+            String[] colors = {"黑色", "白色", "红色", "蓝色", "银色"};
+            String[] sizes = {"S", "M", "L", "XL", "均码"};
+            return "{\"color\":\"" + colors[rng.nextInt(colors.length)]
+                    + "\",\"size\":\"" + sizes[rng.nextInt(sizes.length)] + "\"}";
+        }
+        // 详情富文本：同理，含引号的 HTML 标签会让 LLM 的 JSON 输出失效
+        if (name.equals("detail") || name.endsWith("_detail")) {
+            return "<p>正品保障，全国联保，支持 7 天无理由退换。</p>"
+                    + "<p>发货时效：" + (1 + rng.nextInt(3)) + " 个工作日内发出，偏远地区顺延。</p>";
+        }
         if (name.equals("avatar") || name.equals("photo") || name.equals("image")
                 || name.equals("logo") || name.equals("shop_logo")
                 || name.endsWith("_image") || name.endsWith("_img")

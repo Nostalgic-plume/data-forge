@@ -15,6 +15,7 @@ import com.dataforge.pipeline.ContentGen;
 import com.dataforge.pipeline.FkAlloc;
 import com.dataforge.pipeline.PkGen;
 import com.dataforge.validation.DataValidator;
+import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
@@ -129,6 +130,32 @@ class PlanDrivenExpansionTest {
         DataValidator.ValidationSummary summary = DataValidator.validate(
                 closure(CART_LINK.keySet()).stream().toList(), data, Set.of());
         assertEquals(0, summary.fkOrphanCount(), "cart 的 user_id/product_id/sku_id 不应悬挂");
+    }
+
+    @Test
+    void 结构化列_JSON形态合法且不经LLM() throws Exception {
+        // specs / images / detail 原先走 LLM 生成内嵌 JSON——转义不可靠会撑破外层结构，
+        // 实测会让整表失败。改由本地确定性构造后，形态必须始终是合法 JSON / 可控文本。
+        Map<String, Integer> requested = Map.of("category", 5, "product", 20, "sku", 60);
+        Map<String, GeneratedData> data = generate(realPlan(), requested);
+
+        ObjectMapper om = new ObjectMapper();
+        for (DataRow row : data.get("sku").rows()) {
+            String specs = String.valueOf(row.values().get("specs"));
+            JsonNode node = om.readTree(specs);   // 非法 JSON 在此抛，测试即失败
+            assertTrue(node.isObject(), "specs 应是 JSON 对象，实际: " + specs);
+            assertTrue(node.has("color") && node.has("size"), "specs 应含 color/size: " + specs);
+        }
+        for (DataRow row : data.get("product").rows()) {
+            String images = String.valueOf(row.values().get("images"));
+            JsonNode arr = om.readTree(images);
+            assertTrue(arr.isArray(), "images 应是 JSON 数组，实际: " + images);
+            assertTrue(arr.size() >= 3, "轮播图至少 3 张，实际 " + arr.size());
+
+            String detail = String.valueOf(row.values().get("detail"));
+            assertTrue(detail.contains("<p>") && detail.contains("</p>"),
+                    "detail 应是富文本段落，实际: " + detail);
+        }
     }
 
     @Test
