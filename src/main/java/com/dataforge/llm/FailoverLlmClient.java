@@ -1,6 +1,8 @@
 package com.dataforge.llm;
 
 import com.dataforge.model.ColumnDef;
+import com.dataforge.model.ColumnToolDecision;
+import com.dataforge.model.ProjectRules;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -51,5 +53,41 @@ public class FailoverLlmClient implements DataLlm {
     @Override
     public boolean isMock() {
         return primary.isMock();
+    }
+
+    // ---- 其余通道：透传主（低频操作，不做 failover，主失败由调用方降级）----
+    // 注意：DataLlm 的这些方法都有"退化 default 实现"（空列表 / -1 / 原值），
+    // 此处若不显式覆盖，调用会静默落到 default 上——表现为"规则提炼 0 条、评分恒 -1"且无任何告警。
+
+    @Override
+    public List<Map<String, Object>> correctValues(String tableName, List<ColumnDef> columns,
+                                                   List<Map<String, Object>> samples) {
+        return primary.correctValues(tableName, columns, samples);
+    }
+
+    @Override
+    public List<ProjectRules.Rule> extractRules(String schemaName, String schemaSummary) {
+        return primary.extractRules(schemaName, schemaSummary);
+    }
+
+    @Override
+    public double scoreSamples(String tableName, List<Map<String, Object>> samples) {
+        return primary.scoreSamples(tableName, samples);
+    }
+
+    @Override
+    public List<ColumnToolDecision> decideColumnTools(String tableName, List<ColumnDef> candidates,
+                                                      String toolCatalog) {
+        return primary.decideColumnTools(tableName, candidates, toolCatalog);
+    }
+
+    @Override
+    public Map<String, Integer> recommendRows(String schemaSummary) {
+        return primary.recommendRows(schemaSummary);
+    }
+
+    @Override
+    public List<ProjectRules.Rule> refineRules(List<ProjectRules.Rule> current, String instruction) {
+        return primary.refineRules(current, instruction);
     }
 }
