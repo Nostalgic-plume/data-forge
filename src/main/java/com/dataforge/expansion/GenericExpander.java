@@ -3,6 +3,7 @@ package com.dataforge.expansion;
 import com.dataforge.derivation.ExpressionEvaluator;
 import com.dataforge.derivation.ExpressionException;
 import com.dataforge.expansion.primitive.CountDistribution;
+import com.dataforge.generator.RuleDataGenerator;
 import com.dataforge.model.*;
 import com.dataforge.model.PipelineContext;
 import net.datafaker.Faker;
@@ -144,7 +145,7 @@ public class GenericExpander {
             case "pool" -> poolValue(cp, rng);
             case "date" -> dateValue(cp, rng);
             case "unique" -> seqValue(cp, index, seqStart);
-            case "faker" -> fakerValue(cp, rng);
+            case "faker" -> fakerValue(cp, table, rng);
             case "valueRange" -> valueRangeValue(cp, rng);
             case "const" -> cp.param("value");
             case "llm" -> null;   // 语义列（商品名/规格等）：ContentGen 展开后 LLM 批量回填
@@ -425,9 +426,26 @@ public class GenericExpander {
         return ValuePools.randomDateTime(pastDays, rng);
     }
 
-    /** 通用值池：type=name/phone/address/email/remark/logistics */
-    private String fakerValue(GenerationPlan.ColumnPlan cp, Random rng) {
-        String type = cp.param("type") != null ? cp.param("type") : "name";
+    /**
+     * 通用值池：显式 {@code type}（name/phone/address/email/remark/logistics）优先；
+     * <b>未指定 type 时按列名交给 {@link RuleDataGenerator}</b>——它那套启发式已覆盖
+     * images（JSON 数组）/ specs / detail / avatar / id_card 等按列名的识别，
+     * 在引擎里再写一份就是两份真相，迟早对不上。
+     */
+    private Object fakerValue(GenerationPlan.ColumnPlan cp, TableMeta table, Random rng) {
+        String type = cp.param("type");
+        if (type == null || type.isBlank()) {
+            ColumnDef col = table.columns().stream()
+                    .filter(c -> c.name().equals(cp.column())).findFirst().orElse(null);
+            if (col != null) {
+                List<Map<String, Object>> generated =
+                        RuleDataGenerator.generateRuleValues(List.of(col), 1, rng);
+                if (!generated.isEmpty() && generated.get(0).get(col.name()) != null) {
+                    return generated.get(0).get(col.name());
+                }
+            }
+            return ValuePools.randomChineseName(rng);   // 与旧口径（type 缺省=name）一致
+        }
         return switch (type) {
             case "phone" -> ValuePools.randomPhone(rng);
             case "address" -> ValuePools.randomAddress(rng);
