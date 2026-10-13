@@ -161,6 +161,25 @@ class PlanDrivenExpansionTest {
     }
 
     @Test
+    void 每个用户至多一条默认地址() throws Exception {
+        // 校验规则会查这条：is_default 原先是独立 weighted 随机，同一用户会出现多条默认地址
+        // （实测 77 行）。改为 chain path="1,0"——首条为 1、其余停在 0。
+        Map<String, Integer> requested = Map.of("user", 20, "address", 60);
+        Map<String, GeneratedData> data = generate(realPlan(), requested);
+
+        Map<Object, Integer> defaultsPerUser = new HashMap<>();
+        for (DataRow row : data.get("address").rows()) {
+            if (((Number) row.values().get("is_default")).intValue() == 1) {
+                defaultsPerUser.merge(row.values().get("user_id"), 1, Integer::sum);
+            }
+        }
+        assertFalse(defaultsPerUser.isEmpty(), "应有默认地址");
+        for (Map.Entry<Object, Integer> e : defaultsPerUser.entrySet()) {
+            assertEquals(1, e.getValue(), "用户 " + e.getKey() + " 的默认地址应恰好 1 条");
+        }
+    }
+
+    @Test
     void 状态日志按时间排列后首尾相接() throws Exception {
         // 校验规则查的就是这个：每条日志的开头必须等于上一条的结尾。
         // 原先 from_status / to_status 各自 weighted 随机 → 每行内部就不自洽、行间更接不上。

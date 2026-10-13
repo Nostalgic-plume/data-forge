@@ -110,6 +110,31 @@ class ExpansionSmokeTest {
     // =============================================================
 
     @Test
+    void 取消退款订单不留下发货痕迹() {
+        // 校验规则会查：status IN (5,6) 的订单不应有 deliver_time / logistics_no。
+        // 原先时间线条件只写了 s >= 2，把 5/6 也纳入，实测产生 130 行脏数据。
+        List<TableMeta> tables = closure(Set.of("user", "product", "sku", "orders", "order_item"));
+        Map<String, Integer> requested = Map.of("user", 20, "product", 20, "sku", 80,
+                "orders", 100, "order_item", 250);
+        RunResult r = run(tables, requested,
+                new GeneratorProperties(false, 42L, 50, 4, "sequential", null, 5, 10),
+                new MockLlmClient());
+
+        int checked = 0;
+        for (DataRow row : r.data().get("orders").rows()) {
+            int status = ((Number) row.values().get("status")).intValue();
+            if (status == 5 || status == 6) {   // 已取消 / 已退款
+                assertNull(row.values().get("deliver_time"), "取消/退款订单不应有发货时间");
+                Object logistics = row.values().get("logistics_no");
+                assertTrue(logistics == null || String.valueOf(logistics).isEmpty(),
+                        "取消/退款订单不应有物流单号");
+                checked++;
+            }
+        }
+        assertTrue(checked > 0, "样本里应出现取消/退款订单（权重合计约 5%），否则这条断言是空的");
+    }
+
+    @Test
     void expansionRowsExactAndLinked() {
         List<TableMeta> tables = closure(Set.of("user", "product", "sku", "orders", "order_item"));
         Map<String, Integer> requested = Map.of("user", 20, "product", 20, "sku", 80,
