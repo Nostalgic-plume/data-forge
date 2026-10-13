@@ -146,8 +146,12 @@ class ExpansionSmokeTest {
         assertEquals(80, r.outcome().results().get("sku").data().rowCount());
         assertEquals(100, r.outcome().results().get("orders").data().rowCount());
         assertEquals(250, r.outcome().results().get("order_item").data().rowCount());
-        // LLM 表（user/product/category）走 LLM（llmBatches > 0），展开表零 LLM
-        assertTrue(r.outcome().results().get("user").llmBatches() > 0, "user 是语义源表应走 LLM");
+        // 走不走 LLM 由列分类决定：user 的各列全可本地确定性生成（用户名/昵称/密码/手机/
+        //   邮箱/头像/状态），整表零 LLM；category 的 name 是真语义列，仍走 LLM。
+        assertEquals(0, r.outcome().results().get("user").llmBatches(),
+                "user 各列均可本地生成，不该为一个可格式化的列把整表拖进 LLM 批次");
+        assertTrue(r.outcome().results().get("category").llmBatches() > 0,
+                "category 的 name 是真语义列，仍应走 LLM");
         assertEquals(0, r.outcome().results().get("orders").llmBatches(), "orders 是展开表应零 LLM");
         assertEquals(0, r.outcome().results().get("sku").llmBatches(), "sku 是展开表应零 LLM");
 
