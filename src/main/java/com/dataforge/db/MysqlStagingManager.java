@@ -104,8 +104,15 @@ public class MysqlStagingManager implements StagingManager {
                 try {
                     insertTable(conn, staging, tableData);
                 } catch (Exception e) {
+                    // 附带失败首行各列长度：截断类错误（Data too long for column 'x'）只给列名，
+                    // 而失败行数据随异常丢失，无从判断实际写入了什么；长度足以定位是哪一列出的问题
+                    String diag = tableData.rows().isEmpty() ? "-"
+                            : tableData.rows().get(0).values().entrySet().stream()
+                                    .map(en -> en.getKey() + "=" + String.valueOf(en.getValue()).length() + "字符")
+                                    .collect(Collectors.joining(", "));
                     throw new IllegalStateException(
-                            "staging 导入 `" + tableData.tableName() + "` 失败: " + e.getMessage(), e);
+                            "staging 导入 `" + tableData.tableName() + "` 失败: " + e.getMessage()
+                                    + "｜失败首行各列长度[" + diag + "]", e);
                 }
             }
         } catch (Exception e) {
