@@ -31,7 +31,15 @@ public class MockLlmClient implements DataLlm {
 
     private final Map<Integer, RuntimeException> failOnRowCount = new HashMap<>();
     private final Map<String, RuntimeException> failOnTable = new HashMap<>();
+    private final Map<String, String> blankOnFirstCall = new HashMap<>();
+    private final java.util.Set<String> blankedTables = new java.util.HashSet<>();
+    private final Map<String, Integer> callsByTable = new HashMap<>();
     private double shortfallRatio = 0.0;
+
+    /** 单测断言用：某表被调用过几次（如补差生效则应为 2 次：首填 + 补差） */
+    public int callsFor(String tableName) {
+        return callsByTable.getOrDefault(tableName, 0);
+    }
     /** 全局递增计数器：保证 mock 值跨批次/跨表唯一（批次并行的唯一键冲突由 LLM 副作用引起） */
     private final java.util.concurrent.atomic.AtomicLong globalSeq = new java.util.concurrent.atomic.AtomicLong(1);
 
@@ -53,6 +61,15 @@ public class MockLlmClient implements DataLlm {
         return this;
     }
 
+    /**
+     * 单测注入：该表<b>首次</b>调用时把指定列置空（模拟 LLM 偶发漏字段/单批长文本被截断
+     * → 行数够但个别字段为空 → 应触发整行补差重填，而不是整表判死）。
+     */
+    public MockLlmClient blankOnFirstCall(String tableName, String column) {
+        blankOnFirstCall.put(tableName, column);
+        return this;
+    }
+
     @Override
     public List<Map<String, Object>> generateRows(String tableName, List<ColumnDef> llmCols,
                                                   int rowCount, String fkContext) {
@@ -60,6 +77,7 @@ public class MockLlmClient implements DataLlm {
         if (fault != null) throw fault;
         fault = failOnTable.get(tableName);
         if (fault != null) throw fault;
+        callsByTable.merge(tableName, 1, Integer::sum);
 
         int target = (int) Math.round(rowCount * (1 - shortfallRatio));
         List<Map<String, Object>> rows = new ArrayList<>(target);
@@ -70,6 +88,11 @@ public class MockLlmClient implements DataLlm {
                 row.put(col.name(), mockValue(col, seq));
             }
             rows.add(row);
+        }
+        // 故障注入：首次调用时置空一列（模拟偶发漏字段），后续调用返回完整 → 补差应能补齐
+        String blankCol = blankOnFirstCall.get(tableName);
+        if (blankCol != null && !rows.isEmpty() && blankedTables.add(tableName)) {
+            rows.get(0).put(blankCol, null);
         }
         return rows;
     }
