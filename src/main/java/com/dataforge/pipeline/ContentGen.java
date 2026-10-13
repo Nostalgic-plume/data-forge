@@ -642,16 +642,51 @@ public final class ContentGen {
         int batchSize = Math.max(1, Math.min(props.batchSize(), total));
         List<Map<String, Object>> all = new ArrayList<>(
                 fillBatched(table, llmCols, ctx, total, batchSize));
+        // 缺口一：行数不足 → 追加补填
         if (all.size() < total) {
             int gap = total - all.size();
             log.warn("表 `{}` 语义列回填缺口 {} 行（现 {}），补差重填", table.name(), gap, all.size());
             all.addAll(fillBatched(table, llmCols, ctx, gap, batchSize));
         }
+        // 缺口二：行数够、但个别行的字段为空（LLM 偶发漏字段/单批长文本被截断）→ 整行重填。
+        // 只重填缺的这几行：小批不会触发截断，比整表重来稳；单行缺失就把整表判死太脆。
+        List<Integer> holes = blankRows(all, llmCols, total);
+        if (!holes.isEmpty()) {
+            log.warn("表 `{}` 语义列有 {} 行字段为空，整行补差重填", table.name(), holes.size());
+            List<Map<String, Object>> refill = fillBatched(table, llmCols, ctx, holes.size(), batchSize);
+            for (int k = 0; k < holes.size() && k < refill.size(); k++) {
+                all.set(holes.get(k), refill.get(k));
+            }
+            holes = blankRows(all, llmCols, total);
+        }
         if (all.size() < total) {
             throw new IllegalStateException("表 `" + table.name() + "` 语义列回填不足（"
                     + all.size() + "/" + total + "），标记失败（绝不静默占位）");
         }
+        if (!holes.isEmpty()) {
+            throw new IllegalStateException("表 `" + table.name() + "` 语义列回填重试后仍有 "
+                    + holes.size() + " 行字段为空，标记失败（绝不静默占位）");
+        }
         return all;
+    }
+
+    /** 字段为空的行下标（缺口二用；行数缺口由调用方另行补齐，此处只看 [0,total) 内） */
+    private static List<Integer> blankRows(List<Map<String, Object>> rows, List<ColumnDef> llmCols, int total) {
+        List<Integer> holes = new ArrayList<>();
+        for (int i = 0; i < Math.min(rows.size(), total); i++) {
+            Map<String, Object> row = rows.get(i);
+            if (row == null) {
+                holes.add(i);
+                continue;
+            }
+            for (ColumnDef c : llmCols) {
+                if (row.get(c.name()) == null) {
+                    holes.add(i);
+                    break;
+                }
+            }
+        }
+        return holes;
     }
 
     /**

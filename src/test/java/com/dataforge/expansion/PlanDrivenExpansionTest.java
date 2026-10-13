@@ -38,6 +38,7 @@ import java.util.stream.Collectors;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
@@ -109,12 +110,19 @@ class PlanDrivenExpansionTest {
     /** 跑一次计划驱动生成（唯一与既有测试的差异：context.setPlan） */
     private static Map<String, GeneratedData> generate(GenerationPlan plan,
                                                        Map<String, Integer> requested) {
+        return generate(plan, requested, new MockLlmClient());
+    }
+
+    /** 同上，可注入带故障的 mock（用于验证补差等容错路径） */
+    private static Map<String, GeneratedData> generate(GenerationPlan plan,
+                                                       Map<String, Integer> requested,
+                                                       MockLlmClient mock) {
         List<TableMeta> tables = closure(requested.keySet());
         PipelineContext context = new PipelineContext(tables, rowCounts(tables, requested), 42L);
         context.setPlan(plan);
         PkGen.execute(context, PkGen.Strategy.SEQUENTIAL);
         FkAlloc.execute(context);
-        ContentGen.GenOutcome outcome = ContentGen.execute(context, new MockLlmClient(),
+        ContentGen.GenOutcome outcome = ContentGen.execute(context, mock,
                 new GeneratorProperties(false, 42L, 50, 4, "sequential", null, 5, 10), null, expansionEngine());
         assertTrue(outcome.failedTables().isEmpty(), "不应有失败表: " + outcome.failedTables());
         return outcome.results().entrySet().stream()
@@ -133,6 +141,23 @@ class PlanDrivenExpansionTest {
         DataValidator.ValidationSummary summary = DataValidator.validate(
                 closure(CART_LINK.keySet()).stream().toList(), data, Set.of());
         assertEquals(0, summary.fkOrphanCount(), "cart 的 user_id/product_id/sku_id 不应悬挂");
+    }
+
+    @Test
+    void llm偶发漏字段_补差重填而不是整表判死() throws Exception {
+        // 真实事故复现：product 400 行时某个批次返回的行里 description 为 null → 原先直接整表失败。
+        // LLM 偶发不完整输出是常态，为一行缺失把整表判死太脆；这里确定性逼出那条路径。
+        MockLlmClient flaky = new MockLlmClient().blankOnFirstCall("product", "description");
+        Map<String, Integer> requested = Map.of("category", 5, "product", 30);
+        // generate 内部已断言"无失败表"——补差失效就会走成整表失败，此处直接红
+        Map<String, GeneratedData> data = generate(realPlan(), requested, flaky);
+
+        // 必须真走到补差：product 只有 1 批（30 行 / batch 30），补差重填会再来 1 次
+        assertTrue(flaky.callsFor("product") >= 2,
+                "应触发补差重填（首填 1 次 + 补差 1 次），实际 " + flaky.callsFor("product") + " 次");
+        for (DataRow row : data.get("product").rows()) {
+            assertNotNull(row.values().get("description"), "补差重填后不应再留空字段");
+        }
     }
 
     @Test
