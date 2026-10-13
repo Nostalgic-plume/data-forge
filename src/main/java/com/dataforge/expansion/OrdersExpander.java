@@ -19,7 +19,7 @@ import java.util.Random;
  *   <li><b>user_id 幂律（Zipf 长尾）</b>：少数用户多订单，多数用户少订单（PLAN §4 真实感）</li>
  *   <li>status 权重（绝大多数 4 已完成）；pay_type 随状态联动</li>
  *   <li>时间线：create → pay → deliver → receive 按状态推进（状态-时间联动）</li>
- *   <li>total/actual 占位 0 → 跨表对账（Reconciliation）按 order_item 汇总回填</li>
+ *   <li>total/actual 占位 0 → 生成后由金额规则回填（total 走 AGG_EQUAL 汇总明细，actual 走 EXPR_EQUAL）</li>
  *   <li>order_no 规则唯一（DF + 14 位序号）</li>
  * </ul>
  */

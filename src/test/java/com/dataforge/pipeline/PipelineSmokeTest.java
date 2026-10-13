@@ -2,8 +2,10 @@ package com.dataforge.pipeline;
 
 import com.dataforge.cache.GenerationCache;
 import com.dataforge.config.GeneratorProperties;
+import com.dataforge.derivation.ReconcileEngine;
 import com.dataforge.llm.MockLlmClient;
 import com.dataforge.model.GeneratedData;
+import com.dataforge.model.ProjectRules;
 import com.dataforge.model.TableMeta;
 import com.dataforge.model.PipelineContext;
 import com.dataforge.parser.DdlParser;
@@ -90,7 +92,8 @@ class PipelineSmokeTest {
         ContentGen.GenOutcome outcome = ContentGen.execute(context, mock, props, cache, null);
         Map<String, GeneratedData> data = outcome.results().entrySet().stream()
                 .collect(Collectors.toMap(Map.Entry::getKey, e -> e.getValue().data()));
-        Reconciliation.reconcile(data);
+        // 金额链回填改由规则驱动（原 legacy Reconciliation 已删除）
+        ReconcileEngine.apply(data, ProjectRules.withDefaultCorrectionRules().correctionRules());
         DataValidator.ValidationSummary summary = DataValidator.validate(
                 tables, data, Set.copyOf(outcome.failedTables()));
         return new RunResult(outcome, data, summary);
@@ -130,7 +133,7 @@ class PipelineSmokeTest {
                 "orders", 100, "order_item", 250);
         RunResult r = run(tables, requested, props(50, 4, null), new MockLlmClient());
 
-        // 金额对账一致（total_amount = Σ subtotal，Reconciliation 确定性回填）
+        // 金额对账一致（total_amount = Σ subtotal，由 AGG_EQUAL 规则确定性回填）
         assertTrue(r.summary().amountChecked(), "orders 与 order_item 同时生成，金额应被核对");
         assertEquals(0, r.summary().amountMismatchCount(), "金额对账应一致");
     }

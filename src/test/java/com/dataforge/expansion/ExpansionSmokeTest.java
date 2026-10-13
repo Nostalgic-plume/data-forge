@@ -2,10 +2,12 @@ package com.dataforge.expansion;
 
 import com.dataforge.cache.GenerationCache;
 import com.dataforge.config.GeneratorProperties;
+import com.dataforge.derivation.ReconcileEngine;
 import com.dataforge.expansion.blueprint.DerivedTableExpander;
 import com.dataforge.llm.MockLlmClient;
 import com.dataforge.model.DataRow;
 import com.dataforge.model.GeneratedData;
+import com.dataforge.model.ProjectRules;
 import com.dataforge.model.SourceTag;
 import com.dataforge.model.TableMeta;
 import com.dataforge.model.PipelineContext;
@@ -96,7 +98,8 @@ class ExpansionSmokeTest {
         ContentGen.GenOutcome outcome = ContentGen.execute(context, mock, props, cache, expansionEngine());
         Map<String, GeneratedData> data = outcome.results().entrySet().stream()
                 .collect(Collectors.toMap(Map.Entry::getKey, e -> e.getValue().data()));
-        Reconciliation.reconcile(data);
+        // 金额链回填改由规则驱动（原 legacy Reconciliation 已删除）
+        ReconcileEngine.apply(data, ProjectRules.withDefaultCorrectionRules().correctionRules());
         DataValidator.ValidationSummary summary = DataValidator.validate(
                 tables, data, Set.copyOf(outcome.failedTables()));
         return new RunResult(outcome, data, summary);

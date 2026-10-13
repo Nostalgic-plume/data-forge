@@ -97,9 +97,9 @@ public class DefaultGenerationAgent implements GenerationAgent {
 
         Map<String, GeneratedData> data = outcome.results().entrySet().stream()
                 .collect(Collectors.toMap(Map.Entry::getKey, e -> e.getValue().data()));
-        // 通用聚合回填（AGG_EQUAL 规则驱动，一份规则两处复用）→ legacy Reconciliation 兜底行内/actual
-        boolean aggApplied = ReconcileEngine.apply(data, correctionRules(req.rules()));
-        Reconciliation.reconcile(data, aggApplied);
+        // 金额链回填（规则驱动，零 LLM）：AGG_EQUAL 汇总 total_amount，EXPR_EQUAL 推导 actual_amount。
+        // 不再有 legacy 对账兜底——三段各有明确产出者（明细 subtotal 由 OrderItemExpander 自算）
+        ReconcileEngine.apply(data, correctionRules(req.rules()));
 
         Map<String, Integer> actualCounts = new LinkedHashMap<>();
         Map<String, GenerationAgent.TableStat> tableStats = new LinkedHashMap<>();
@@ -120,7 +120,7 @@ public class DefaultGenerationAgent implements GenerationAgent {
      *   <li><b>起始 ID=MAX+1</b>：PkGen SEQUENTIAL 从现有最大 id 之后开始（追加不冲突）</li>
      *   <li><b>现有池引用</b>：FkAlloc 父表池 = 现有 PK ∪ 新增 PK（FK 跨现有）</li>
      *   <li><b>跨现有引用</b>：ContentGen 预填现有父表列值索引（展开器/LLM 可见现有数据）</li>
-     *   <li><b>跨现有对账</b>：Reconciliation 对 baseline ∪ 新增 跑（现有金额正确→重算不变，不误伤）</li>
+     *   <li><b>跨现有金额回填</b>：规则对 baseline ∪ 新增 一致适用（现有金额正确→重算不变，不误伤）</li>
      * </ul>
      */
     public GenerationResult generateIncremental(GenerationRequest req,
@@ -180,9 +180,8 @@ public class DefaultGenerationAgent implements GenerationAgent {
             if (added != null) allRows.addAll(added.rows());
             data.put(t.name(), new GeneratedData(t.name(), t.columns(), allRows));
         }
-        // 跨现有对账（AGG 规则驱动优先；现有金额正确行重算不变，不误伤）
-        boolean aggApplied = ReconcileEngine.apply(data, correctionRules(req.rules()));
-        Reconciliation.reconcile(data, aggApplied);
+        // 跨现有金额回填（规则对 baseline ∪ 新增 一致适用；现有行金额本已正确，重算不变，不误伤）
+        ReconcileEngine.apply(data, correctionRules(req.rules()));
 
         Map<String, Integer> actualCounts = new LinkedHashMap<>();
         Map<String, GenerationAgent.TableStat> tableStats = new LinkedHashMap<>();

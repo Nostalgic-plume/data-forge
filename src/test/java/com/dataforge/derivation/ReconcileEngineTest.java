@@ -207,7 +207,7 @@ class ReconcileEngineTest {
         Map<String, GeneratedData> data = new LinkedHashMap<>();
         data.put("orders", amounts());
         // 无 order_item → AGG 无法回填；EXPR 成功也不得让返回值变 true
-        // （true 会让 Reconciliation 跳过 total 段，导致 total 永远没人填）
+        // （该返回值专指"跨表聚合已接管"；混入行内表达式的成功会让调用方误判 total 已有着落）
         assertFalse(ReconcileEngine.apply(data, List.of(expr())),
                 "EXPR 的成功语义不是 total 已被接管");
     }

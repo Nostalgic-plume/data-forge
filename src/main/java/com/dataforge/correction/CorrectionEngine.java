@@ -150,8 +150,8 @@ public class CorrectionEngine {
             case "STATUS_FLOW" -> planStatusFlow(bucket, rules, staging, scopeMinId);
             case "CUSTOM_SQL" -> planCustomSql(bucket, rules, tables, staging, scopeMinId);
             // TODO: EXPR_EQUAL 尚无零 LLM 修正通道，当前落到 planLlm（LLM 猜值修正）。
-            //   与 AGG_EQUAL 对称的做法是新增 planExprEqual（重算 SQL 直接覆盖目标列）；
-            //   待步骤 4 删除 Reconciliation 兜底前必须补齐，否则金额偏差只能靠 LLM 修。
+            //   与 AGG_EQUAL 对称的做法是新增 planExprEqual（重算 SQL 直接覆盖目标列）。
+            //   Reconciliation 兜底已删除，金额偏差目前只能靠 LLM 修——该通道建议尽快补齐。
             default -> planLlm(bucket, tables);
         };
     }

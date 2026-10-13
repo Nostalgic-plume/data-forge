@@ -77,7 +77,7 @@ public final class RuleSetters {
                 //   避免真实 LLM 提炼"status 0~6"这类宽范围破坏合理枚举权重
                 if ("weighted".equals(cp.mode())) yield null;
                 // 护栏 2：范围过宽（LLM 占位大值，如金额 total_amount 0~1e8）→ 拒绝，
-                //   保留启发式 const（金额由 Reconciliation 对账兜底）
+                //   保留启发式 const（金额由 AGG_EQUAL / EXPR_EQUAL 规则回填）
                 Double minV = parseDouble(min);
                 Double maxV = parseDouble(max);
                 if (minV != null && maxV != null && (maxV - minV) > 1_000_000) yield null;

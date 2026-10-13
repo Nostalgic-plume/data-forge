@@ -46,7 +46,7 @@ public final class RuleFilter {
         if (!"VALUE_RANGE".equals(r.type())) return true;   // 非 VALUE_RANGE 保留（ENUM_WEIGHT/STATUS_FLOW/USER_NOTE…）
         Double min = parseDouble(r.params().get("min"));
         Double max = parseDouble(r.params().get("max"));
-        // 金额/价格列：真实约束来自对账（Reconciliation）/锚点，不用 LLM 的宽范围——
+        // 金额/价格列：真实约束来自金额规则（AGG_EQUAL / EXPR_EQUAL）/锚点，不用 LLM 的宽范围——
         //   必须给合理上界（无 max 或范围过宽 → 过滤）
         if (isMoneyColumn(r.column())) {
             if (max == null || (min != null && (max - min) > MAX_RANGE_SPAN)) return false;
