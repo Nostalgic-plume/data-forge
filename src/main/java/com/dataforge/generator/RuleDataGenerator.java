@@ -344,6 +344,15 @@ public final class RuleDataGenerator {
                 || name.endsWith("_email") || name.endsWith("_mail")) {
             return FAKER.internet().emailAddress();
         }
+        // 密码：bcrypt 形态占位（总长 60，与真实 bcrypt 一致）。数据合成场景不参与真实登录
+        //   校验，形态合规即可——但必须是"看起来像"的，否则前后端联调时会露馅。
+        if (name.equals("password") || name.endsWith("_password") || name.equals("passwd")) {
+            StringBuilder sb = new StringBuilder("$2a$10$");
+            while (sb.length() < 60) {
+                sb.append(Long.toUnsignedString(rng.nextLong(), 36));
+            }
+            return sb.substring(0, 60);   // 不假设单段长度，拼够再截，避免越界
+        }
         // 用户名：登录名，格式规范即可（user_ + 8 位 base36，碰撞概率极低到可忽略）
         if (name.equals("username") || name.endsWith("_username")) {
             return "user_" + Long.toString(Math.abs(rng.nextLong()), 36).substring(0, 8);

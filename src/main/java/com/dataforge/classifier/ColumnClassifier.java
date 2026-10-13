@@ -115,6 +115,11 @@ public final class ColumnClassifier {
                 || name.equals("nickname") || name.endsWith("_nickname")) {
             return true;
         }
+        // 密码：bcrypt 形态占位（数据合成不参与真实登录校验，形态合规即可）。
+        //   漏了这一条会让 user 整表仍走 LLM——一个列把整张表拖回 LLM 批次。
+        if (name.equals("password") || name.endsWith("_password") || name.equals("passwd")) {
+            return true;
+        }
         // 身份证
         if (name.contains("id_card") || name.contains("idcard")
                 || name.equals("identity_card") || name.equals("id_no")
