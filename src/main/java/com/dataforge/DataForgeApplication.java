@@ -34,9 +34,11 @@ public class DataForgeApplication {
         }
 
         // 3. --port：Web 端口（默认 8080；也可直接用 --server.port）
+        //    扩容 1 位即可——扩容 2 位会留下一个 null 元素，SimpleCommandLineArgsParser 解析时
+        //    对 null 调 startsWith 直接 NPE，导致 --mock-llm --port 8099 组合必然启动失败
         if (hasArg(args, "--port")) {
-            args = Arrays.copyOf(args, args.length + 2);
-            args[args.length - 2] = "--server.port=" + webPort(args);
+            args = Arrays.copyOf(args, args.length + 1);
+            args[args.length - 1] = "--server.port=" + webPort(args);
         }
 
         // 4. 启动 Web 容器（application.yml web-application-type: servlet，DataForge 唯一入口）
