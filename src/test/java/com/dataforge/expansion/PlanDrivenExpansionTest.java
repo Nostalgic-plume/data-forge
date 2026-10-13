@@ -167,9 +167,7 @@ class PlanDrivenExpansionTest {
                 "orders", 100, "order_item", 250);
         Map<String, GeneratedData> data = generate(realPlan(), requested);
 
-        boolean aggApplied = ReconcileEngine.apply(
-                data, ProjectRules.withDefaultCorrectionRules().correctionRules());
-        assertTrue(aggApplied, "AGG_EQUAL 应接管 total_amount");
+        ReconcileEngine.apply(data, ProjectRules.withDefaultCorrectionRules().correctionRules());
 
         GeneratedData orders = data.get("orders");
         GeneratedData orderItem = data.get("order_item");

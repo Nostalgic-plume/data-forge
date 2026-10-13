@@ -42,6 +42,31 @@ final class CorrectionSqls {
     }
 
     /**
+     * EXPR_EQUAL check：目标列 ≠ 同行表达式求值的差异行。
+     * 返回 {@code {id, current, expected}}，expected = 按表达式重算出的正确值。
+     *
+     * @param sqlExpr 已翻译好的 SQL 片段（见 {@code ExprSql}：字符集白名单 + 标识符反引号化），
+     *                与校验侧 {@code MetaRuleCompiler} 共用同一份翻译实现
+     */
+    static String exprEqualCheckSql(String staging, String table, String col,
+                                    String sqlExpr, Long scopeMinId) {
+        return "SELECT t.`id` AS `id`, t." + q(col) + " AS `current`,\n"
+                + "       (" + sqlExpr + ") AS `expected`\n"
+                + "FROM " + q(staging) + "." + q(table) + " t\n"
+                + "WHERE ABS(t." + q(col) + " - (" + sqlExpr + ")) > 0.01"
+                + scopeClause("t", scopeMinId);
+    }
+
+    /** EXPR_EQUAL apply：差异行的目标列改写为表达式求值结果 */
+    static String exprEqualApplySql(String staging, String table, String col,
+                                    String sqlExpr, Long scopeMinId) {
+        return "UPDATE " + q(staging) + "." + q(table) + " t\n"
+                + "SET t." + q(col) + " = (" + sqlExpr + ")\n"
+                + "WHERE ABS(t." + q(col) + " - (" + sqlExpr + ")) > 0.01"
+                + scopeClause("t", scopeMinId);
+    }
+
+    /**
      * 唯一后缀去重 check：重复组内除保留行外的问题行 + 当前值。
      * 返回 {@code {id, value}}（保留行 = 每组 MIN(id)，其余追加 "_<id>" 后缀）。
      */

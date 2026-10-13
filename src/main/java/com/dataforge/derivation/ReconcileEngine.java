@@ -49,16 +49,12 @@ public final class ReconcileEngine {
      * @param data     已生成的各表数据（tableName → GeneratedData）
      * @param aggRules 修正规则（<b>可原样传入全部 correctionRules</b>：本引擎按 type 自行筛选，
      *                 不认识的类型静默跳过——调用侧不需要、也不应该先筛一遍）
-     * @return <b>仅</b> AGG_EQUAL 是否至少成功回填一处（EXPR_EQUAL 的结果不计入——两者成功
-     *         语义不同，混在一起会让调用方把"行内表达式算过了"误当成"跨表聚合已接管"）；
-     *         当前调用方不消费该值，保留是因为它是"聚合是否真的落了地"的唯一自检信号
      */
-    public static boolean apply(Map<String, GeneratedData> data, List<ProjectRules.Rule> aggRules) {
+    public static void apply(Map<String, GeneratedData> data, List<ProjectRules.Rule> aggRules) {
         if (data == null || data.isEmpty() || aggRules == null || aggRules.isEmpty()) {
-            return false;
+            return;
         }
         // 第一遍：跨表聚合回填（EXPR_EQUAL 可能引用这里刚回填出来的列，故必须在前）
-        boolean aggApplied = false;
         for (ProjectRules.Rule rule : aggRules) {
             if (rule == null || !"AGG_EQUAL".equals(rule.type())) continue;
             if (rule.table() == null || rule.column() == null) continue;
@@ -76,7 +72,7 @@ public final class ReconcileEngine {
                 log.warn("聚合回填跳过 {}:{}：规则缺 sum_col/join_col 参数", rule.table(), rule.column());
                 continue;
             }
-            aggApplied |= fill(target, rule.column(), ref, sumCol, joinCol);
+            fill(target, rule.column(), ref, sumCol, joinCol);
         }
         // 第二遍：行内表达式回填（依赖第一遍结果，顺序不可交换）
         for (ProjectRules.Rule rule : aggRules) {
@@ -89,7 +85,6 @@ public final class ReconcileEngine {
             }
             fillExpr(target, rule);
         }
-        return aggApplied;
     }
 
     /**
@@ -137,9 +132,9 @@ public final class ReconcileEngine {
     }
 
     /** 单条规则：ref 按 join_col 分组求和 → 回填 target 每行（命中组=sum，无组=0） */
-    private static boolean fill(GeneratedData target, String targetColumn,
-                                GeneratedData ref, String sumCol, String joinCol) {
-        if (target.rows().isEmpty() || ref.rows().isEmpty()) return false;
+    private static void fill(GeneratedData target, String targetColumn,
+                             GeneratedData ref, String sumCol, String joinCol) {
+        if (target.rows().isEmpty() || ref.rows().isEmpty()) return;
         Map<String, BigDecimal> sums = new LinkedHashMap<>();
         for (DataRow row : ref.rows()) {
             Object joinVal = row.values().get(joinCol);
@@ -154,10 +149,9 @@ public final class ReconcileEngine {
         String idCol = idColumn(target);
         if (idCol == null) {
             log.warn("聚合回填跳过 {}:{}：目标表无主键/id 列", target.tableName(), targetColumn);
-            return false;
+            return;
         }
         int scale = targetScale(target, targetColumn);
-        boolean filled = false;
         for (DataRow row : target.rows()) {
             Object idVal = row.values().get(idCol);
             if (idVal == null) continue;
@@ -165,9 +159,7 @@ public final class ReconcileEngine {
             BigDecimal value = (total == null ? BigDecimal.ZERO : total).setScale(scale, RoundingMode.HALF_UP);
             row.values().put(targetColumn, value);
             row.lineage().put(targetColumn, SourceTag.CORRECTED);
-            filled = true;
         }
-        return filled;
     }
 
     /** 目标表主键列名：primaryKey 列优先，其次名为 id 的列 */

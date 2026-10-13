@@ -4,6 +4,7 @@ import com.dataforge.agent.CorrectionAgent;
 import com.dataforge.db.JdbcDataSource;
 import com.dataforge.db.MysqlJdbcDataSource;
 import com.dataforge.db.StagingManager;
+import com.dataforge.derivation.ExprSql;
 import com.dataforge.generator.RuleDataGenerator;
 import com.dataforge.llm.DataLlm;
 import com.dataforge.model.*;
@@ -149,9 +150,7 @@ public class CorrectionEngine {
             case "FORMAT" -> planFormat(bucket, rules, tables, staging, scopeMinId);
             case "STATUS_FLOW" -> planStatusFlow(bucket, rules, staging, scopeMinId);
             case "CUSTOM_SQL" -> planCustomSql(bucket, rules, tables, staging, scopeMinId);
-            // TODO: EXPR_EQUAL 尚无零 LLM 修正通道，当前落到 planLlm（LLM 猜值修正）。
-            //   与 AGG_EQUAL 对称的做法是新增 planExprEqual（重算 SQL 直接覆盖目标列）。
-            //   Reconciliation 兜底已删除，金额偏差目前只能靠 LLM 修——该通道建议尽快补齐。
+            case "EXPR_EQUAL" -> planExprEqual(bucket, rules, staging, scopeMinId);
             default -> planLlm(bucket, tables);
         };
     }
@@ -182,6 +181,38 @@ public class CorrectionEngine {
         return new FixAction(rule.table(), "AGG_EQUAL", rule.expression(),
                 CorrectionSqls.aggEqualApplySql(staging, rule.table(), rule.column(),
                         refTable, sumCol, joinCol, scopeMinId), fixes, null, List.of(), 0);
+    }
+
+    /**
+     * 规则通道：EXPR_EQUAL（目标列 = 同行表达式求值），零 LLM。
+     * 与 {@link #planAggEqual} 对称——一个是跨表聚合，一个是行内推导；两者都是"确定性重算覆盖"，
+     * 所以不需要 LLM 猜值。表达式经 {@code ExprSql} 翻译，与校验侧共用同一份实现。
+     */
+    private FixAction planExprEqual(ValidationReport.Bucket bucket, ProjectRules rules,
+                                    String staging, Long scopeMinId) {
+        ProjectRules.Rule rule = rules.correctionRules().stream()
+                .filter(r -> "EXPR_EQUAL".equals(r.type())
+                        && r.table().equals(bucket.table()) && r.column().equals(bucket.column()))
+                .findFirst().orElse(null);
+        if (rule == null) return null;
+        String sqlExpr;
+        try {
+            sqlExpr = ExprSql.toSql(rule.params() == null ? null : rule.params().get("expr"),
+                    "规则 " + rule.table() + "." + rule.column());
+        } catch (IllegalStateException e) {
+            log.warn("EXPR_EQUAL 修正跳过（表达式非法，交由后续处理）: {}", e.getMessage());
+            return null;
+        }
+        List<Map<String, Object>> affected = jdbc.query(CorrectionSqls.exprEqualCheckSql(
+                staging, rule.table(), rule.column(), sqlExpr, scopeMinId));
+        if (affected.isEmpty()) return null;
+        List<FixCommand> fixes = affected.stream()
+                .map(r -> new FixCommand(rule.table(), idOf(r),
+                        Map.of(rule.column(), r.get("expected")), rule.expression()))
+                .toList();
+        return new FixAction(rule.table(), "EXPR_EQUAL", rule.expression(),
+                CorrectionSqls.exprEqualApplySql(staging, rule.table(), rule.column(), sqlExpr, scopeMinId),
+                fixes, null, List.of(), 0);
     }
 
     /** 规则通道：唯一后缀去重（重复组保留 MIN(id)，其余追加 _<id>），零 LLM */
