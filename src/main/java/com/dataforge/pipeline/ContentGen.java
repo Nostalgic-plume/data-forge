@@ -626,23 +626,74 @@ public final class ContentGen {
         }
     }
 
-    /** 完整回填 + 补差（LLM 返回不足 → 补缺段一次；仍不足 → 抛异常，绝不静默接受缺口） */
+    /**
+     * 完整回填 + 补差（LLM 返回不足 → 补缺段；仍不足 → 抛异常，绝不静默接受缺口）。
+     *
+     * <p><b>必须分批</b>：本方法此前把整表行数一次性交给 LLM，与 source 表
+     * （generateLlmTable 按 batchSize 切批）实现不一致。大表因此必然触发 180s 超时装饰器
+     * ——实测 product 300 行 × 4 列超时，随后 failover 到未配置密钥的备模型，
+     * 以 404 收场、整表失败并连累依赖它的表。小规模（60 行）恰好卡在超时线内，故长期未暴露。</p>
+     *
+     * <p>串行分批而非并发：本方法所在的表生成本身已是表级并发（Semaphore 限流），
+     * 表内再叠加并发会把总并发推高到 maxConcurrency² 量级。</p>
+     */
     private List<Map<String, Object>> fillRowsWithGapFill(TableMeta table, List<ColumnDef> llmCols, int total) {
         String ctx = tableConstraints(table.name());
-        List<Map<String, Object>> all = new ArrayList<>(total);
-        List<Map<String, Object>> first = llm.generateRows(table.name(), llmCols, total, ctx);
-        if (first != null) all.addAll(first);
+        int batchSize = Math.max(1, Math.min(props.batchSize(), total));
+        List<Map<String, Object>> all = new ArrayList<>(
+                fillBatched(table, llmCols, ctx, total, batchSize));
         if (all.size() < total) {
             int gap = total - all.size();
             log.warn("表 `{}` 语义列回填缺口 {} 行（现 {}），补差重填", table.name(), gap, all.size());
-            List<Map<String, Object>> gapRows = llm.generateRows(table.name(), llmCols, gap, ctx);
-            if (gapRows != null) all.addAll(gapRows);
+            all.addAll(fillBatched(table, llmCols, ctx, gap, batchSize));
         }
         if (all.size() < total) {
             throw new IllegalStateException("表 `" + table.name() + "` 语义列回填不足（"
                     + all.size() + "/" + total + "），标记失败（绝不静默占位）");
         }
         return all;
+    }
+
+    /**
+     * 分批并发调用 LLM 生成 rows 行的语义列值（Semaphore 限流 maxConcurrency，与 source 表同款）。
+     *
+     * <p><b>结果必须按批序拼接</b>：调用方 fillLlmColumns 按行下标与回填结果一一对应
+     * （llmRows.get(i) → rows.get(i)），顺序错乱会把商品名配到别的商品上——比缺值更危险。</p>
+     */
+    private List<Map<String, Object>> fillBatched(TableMeta table, List<ColumnDef> llmCols,
+                                                  String ctx, int rows, int batchSize) {
+        List<int[]> batches = new ArrayList<>();
+        for (int offset = 0; offset < rows; offset += batchSize) {
+            batches.add(new int[]{offset, Math.min(batchSize, rows - offset)});
+        }
+        Semaphore semaphore = new Semaphore(Math.max(1, props.maxConcurrency()));
+        ExecutorService pool = Executors.newVirtualThreadPerTaskExecutor();
+        try {
+            List<CompletableFuture<List<Map<String, Object>>>> futures = new ArrayList<>();
+            for (int[] batch : batches) {
+                futures.add(CompletableFuture.supplyAsync(() -> {
+                    try {
+                        semaphore.acquire();
+                    } catch (InterruptedException e) {
+                        Thread.currentThread().interrupt();
+                        throw new RuntimeException(e);
+                    }
+                    try {
+                        return llm.generateRows(table.name(), llmCols, batch[1], ctx);
+                    } finally {
+                        semaphore.release();
+                    }
+                }, pool));
+            }
+            List<Map<String, Object>> all = new ArrayList<>(rows);
+            for (CompletableFuture<List<Map<String, Object>>> f : futures) {
+                List<Map<String, Object>> part = f.join();
+                if (part != null) all.addAll(part);
+            }
+            return all;
+        } finally {
+            pool.shutdown();
+        }
     }
 
     /**
