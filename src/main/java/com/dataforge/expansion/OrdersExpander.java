@@ -52,13 +52,15 @@ public class OrdersExpander implements Expander {
             String createTime = ValuePools.randomDateTime(90, rng);
             int status = Zipf.weightedPick(statusWeights, rng);
 
-            // 状态-时间线联动（通用原语 StatusTimeline：状态机驱动事件字段，时间按序推进）
+            // 状态-时间线联动（通用原语 StatusTimeline：状态机驱动事件字段，时间按序推进）。
+            // 上界必须卡在 4：5/6 是取消/退款这类终态，它们不该留下支付/发货/收货痕迹——
+            // 原先只写了 `s >= 2`，把 5/6 也纳入，实测产生 130 行"已取消却有发货时间"的脏数据。
             StatusTimeline.Timeline tl = StatusTimeline.build(status, createTime, List.of(
-                    StatusTimeline.Step.when(s -> s >= 1 && s != 5, "pay_time",
+                    StatusTimeline.Step.when(s -> s >= 1 && s <= 4, "pay_time",
                             (t, r) -> ValuePools.laterDateTime(t, r)),
-                    StatusTimeline.Step.when(s -> s >= 2, "deliver_time",
+                    StatusTimeline.Step.when(s -> s >= 2 && s <= 4, "deliver_time",
                             (t, r) -> ValuePools.laterDateTime(t, r)),
-                    StatusTimeline.Step.when(s -> s >= 3, "receive_time",
+                    StatusTimeline.Step.when(s -> s >= 3 && s <= 4, "receive_time",
                             (t, r) -> ValuePools.laterDateTime(t, r))
             ), rng);
             String payTime = (String) tl.fields().get("pay_time");
@@ -87,7 +89,8 @@ public class OrdersExpander implements Expander {
                     case "pay_type" -> payType;
                     case "pay_time" -> payTime;
                     case "deliver_time" -> deliverTime;
-                    case "logistics_no" -> status >= 2 ? ValuePools.randomLogisticsNo(rng) : "";
+                    // 只有"已发货~已完成"才有物流单号；5/6 已取消/退款，不该留下单号
+                    case "logistics_no" -> status >= 2 && status <= 4 ? ValuePools.randomLogisticsNo(rng) : "";
                     case "receive_time" -> receiveTime;
                     case "remark" -> ValuePools.randomRemark(rng);
                     case "create_time" -> createTime;
