@@ -18,11 +18,14 @@ import java.util.regex.Pattern;
  * 通用执行引擎（通用化核心）：读分析 agent 产出的 {@link GenerationPlan.TablePlan} 生成派生表，
  * 换任何业务域只改配置，零 Java 改动。
  *
- * <p>列生成模式（ColumnPlan.mode）：fk（父表池引用）/ seq（序号自动续号）/ weighted（权重分布）
- * / enum（枚举随机）/ pool（值池）/ date（日期范围）/ unique（唯一前缀）/ faker（通用值池）
- * / const（常量）。确定性（PipelineContext 派生 rng），血缘标 EXPAND。</p>
+ * <p>列生成模式（ColumnPlan.mode）：fk（父表池引用；params.follow 使其跟随同行锚定列取同一
+ * 父行的另一列）/ seq（序号自动续号）/ weighted（权重分布）/ enum（枚举随机）/ pool（值池）
+ * / date（日期范围）/ unique（唯一前缀）/ faker（通用值池）/ valueRange（区间）/ const（常量）
+ * / llm（语义列，生成后由 ContentGen 批量回填）/ expr（行内表达式，只引用同表计划列）。
+ * 确定性（PipelineContext 派生 rng），血缘标 EXPAND。</p>
  *
- * <p>跨表聚合（agg_sum）为后续扩展：当前由 Reconciliation 按业务列名探测回填。</p>
+ * <p>跨表聚合与行内一致性<b>不归本类管</b>：分别由 AGG_EQUAL / EXPR_EQUAL 规则在生成后回填，
+ * 见 {@link com.dataforge.derivation.ReconcileEngine}。</p>
  */
 @Component
 public class GenericExpander {

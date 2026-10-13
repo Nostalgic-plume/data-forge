@@ -1,12 +1,14 @@
 package com.dataforge.expansion;
 
 import com.dataforge.config.GeneratorProperties;
+import com.dataforge.derivation.ReconcileEngine;
 import com.dataforge.expansion.blueprint.DerivedTableExpander;
 import com.dataforge.llm.MockLlmClient;
 import com.dataforge.model.DataRow;
 import com.dataforge.model.GeneratedData;
 import com.dataforge.model.GenerationPlan;
 import com.dataforge.model.PipelineContext;
+import com.dataforge.model.ProjectRules;
 import com.dataforge.model.TableMeta;
 import com.dataforge.parser.DdlParser;
 import com.dataforge.pipeline.ContentGen;
@@ -23,6 +25,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayDeque;
 import java.util.Deque;
+import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -126,6 +129,55 @@ class PlanDrivenExpansionTest {
         DataValidator.ValidationSummary summary = DataValidator.validate(
                 closure(CART_LINK.keySet()).stream().toList(), data, Set.of());
         assertEquals(0, summary.fkOrphanCount(), "cart 的 user_id/product_id/sku_id 不应悬挂");
+    }
+
+    @Test
+    void 去掉对账兜底后_金额链仍由规则自洽() throws Exception {
+        // 步骤 4 的前置验收：DefaultGenerationAgent 不再调 Reconciliation 之后，
+        // subtotal（展开器自算）+ total（AGG_EQUAL）+ actual（EXPR_EQUAL）三段必须仍然成立。
+        // 注意这里**故意不调 Reconciliation**——它就是被删掉的那层兜底。
+        Map<String, Integer> requested = Map.of("user", 20, "product", 20, "sku", 80,
+                "orders", 100, "order_item", 250);
+        Map<String, GeneratedData> data = generate(realPlan(), requested);
+
+        boolean aggApplied = ReconcileEngine.apply(
+                data, ProjectRules.withDefaultCorrectionRules().correctionRules());
+        assertTrue(aggApplied, "AGG_EQUAL 应接管 total_amount");
+
+        GeneratedData orders = data.get("orders");
+        GeneratedData orderItem = data.get("order_item");
+
+        // ① 行内：subtotal = price × quantity（OrderItemExpander 自算）
+        for (DataRow row : orderItem.rows()) {
+            double price = ((Number) row.values().get("price")).doubleValue();
+            int qty = ((Number) row.values().get("quantity")).intValue();
+            assertEquals(Math.round(price * qty * 100.0) / 100.0,
+                    ((Number) row.values().get("subtotal")).doubleValue(), 0.001,
+                    "subtotal 应 = price × quantity");
+        }
+
+        // ② 跨表：total_amount = Σ subtotal（按 order_id 分组，AGG_EQUAL 回填）
+        Map<Object, Double> sumByOrder = new HashMap<>();
+        for (DataRow row : orderItem.rows()) {
+            sumByOrder.merge(row.values().get("order_id"),
+                    ((Number) row.values().get("subtotal")).doubleValue(), Double::sum);
+        }
+        for (DataRow row : orders.rows()) {
+            Double expected = sumByOrder.getOrDefault(row.values().get("id"), 0.0);
+            assertEquals(Math.round(expected * 100.0) / 100.0,
+                    ((Number) row.values().get("total_amount")).doubleValue(), 0.011,
+                    "total_amount 应 = Σ 明细小计");
+        }
+
+        // ③ 行内：actual_amount = total - discount + freight（EXPR_EQUAL 回填，引用 ② 的结果）
+        for (DataRow row : orders.rows()) {
+            double total = ((Number) row.values().get("total_amount")).doubleValue();
+            double discount = ((Number) row.values().get("discount_amount")).doubleValue();
+            double freight = ((Number) row.values().get("freight")).doubleValue();
+            assertEquals(Math.round((total - discount + freight) * 100.0) / 100.0,
+                    ((Number) row.values().get("actual_amount")).doubleValue(), 0.001,
+                    "actual_amount 应 = total - discount + freight");
+        }
     }
 
     @Test

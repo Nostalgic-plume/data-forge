@@ -28,7 +28,7 @@ import java.util.regex.Pattern;
  * <p><b>两类规则分两遍执行</b>（不依赖规则在文件中的排列顺序，顺序由语义决定）：
  * <ol>
  *   <li><b>AGG_EQUAL</b>：{@code target.column = SUM(ref_table.sum_col GROUP BY ref_table.join_col 对 target.id)}，
- *       无明细匹配的 target 行填 0（与 Reconciliation 现有口径一致）</li>
+ *       无明细匹配的 target 行填 0（没有明细的订单，总额本来就是 0）</li>
  *   <li><b>EXPR_EQUAL</b>：{@code target.column = expr(同行其它列)}——<b>必须在 AGG 之后</b>，
  *       因为表达式常引用 AGG 刚回填出来的列（如 {@code actual_amount = total_amount - discount_amount + freight}）</li>
  * </ol></p>
@@ -49,8 +49,9 @@ public final class ReconcileEngine {
      * @param data     已生成的各表数据（tableName → GeneratedData）
      * @param aggRules 修正规则（<b>可原样传入全部 correctionRules</b>：本引擎按 type 自行筛选，
      *                 不认识的类型静默跳过——调用侧不需要、也不应该先筛一遍）
-     * @return <b>仅</b> AGG_EQUAL 是否至少成功回填一处（调用方据此跳过 legacy Reconciliation 的
-     *         total 段）；EXPR_EQUAL 的结果不计入——它的成功语义不是"total 已被规则接管"
+     * @return <b>仅</b> AGG_EQUAL 是否至少成功回填一处（EXPR_EQUAL 的结果不计入——两者成功
+     *         语义不同，混在一起会让调用方把"行内表达式算过了"误当成"跨表聚合已接管"）；
+     *         当前调用方不消费该值，保留是因为它是"聚合是否真的落了地"的唯一自检信号
      */
     public static boolean apply(Map<String, GeneratedData> data, List<ProjectRules.Rule> aggRules) {
         if (data == null || data.isEmpty() || aggRules == null || aggRules.isEmpty()) {

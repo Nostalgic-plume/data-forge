@@ -74,10 +74,17 @@ public record ProjectRules(
     /**
      * 内置默认修正规则（P4 通用化：金额对账以参数化 AGG_EQUAL 表达，替代引擎硬编码 orders）。
      * P6 分析 agent 产出 project_rules 后由 correctionRules 替换。
+     *
+     * <p>金额链三段在<b>没有 project_rules.json 时也必须自洽</b>：total_amount 由 AGG_EQUAL
+     * 汇总明细，actual_amount 由 EXPR_EQUAL 行内推导——缺了后者，actual 会静默留展开器的
+     * 占位 0（这正是删除 Reconciliation 兜底后最危险的一处）。</p>
      */
     public static ProjectRules withDefaultCorrectionRules() {
-        Rule amount = Rule.aggEqual("orders", "total_amount", "order_item", "subtotal",
+        Rule total = Rule.aggEqual("orders", "total_amount", "order_item", "subtotal",
                 "order_id", "总额 = Σ 明细小计", Rule.Source.USER_CONFIRMED);
-        return new ProjectRules(List.of(), List.of(amount), List.of(), 1);
+        Rule actual = new Rule("orders", "actual_amount", "EXPR_EQUAL",
+                "实付金额 = 订单金额 - 优惠金额 + 运费", 1.0, Rule.Source.USER_CONFIRMED,
+                Map.of("expr", "total_amount - discount_amount + freight"));
+        return new ProjectRules(List.of(), List.of(total, actual), List.of(), 1);
     }
 }
