@@ -70,12 +70,20 @@ public class GenericExpander {
         for (int i = 0; i < target; i++) {
             RowCtx rowCtx = rowContexts.get(i);
             Map<String, Object> values = new LinkedHashMap<>();
-            // ① 非 expr 计划列先生成（expr 延后，保证可引用同表已算出的列，§H8 列序）
+            // ① 非 expr 计划列先生成（expr 与携带列延后，保证可引用同表已算出的列，§H8 列序）
             for (GenerationPlan.ColumnPlan cp : plan.columns()) {
-                if ("expr".equals(cp.mode())) continue;
-                values.put(cp.column(), generateValue(cp, table, context, completedData, i, seqStart, rng, uniqueFk, rowCtx));
+                if ("expr".equals(cp.mode()) || isCarriedFk(cp)) continue;
+                values.put(cp.column(), generateValue(cp, table, context, completedData,
+                        i, seqStart, rng, uniqueFk, rowCtx, values));
             }
-            // ② expr 表达式列：引用仅限 ① 已生成的计划列（validateExprColumns 预检保证）
+            // ①′ 携带列 fk（params.follow）：值与同行锚定列取自同一父行，故必须等锚定列算完。
+            //    独立成一遍而非依赖 plan 的列书写顺序——让顺序隐式决定正确性太脆。
+            for (GenerationPlan.ColumnPlan cp : plan.columns()) {
+                if (!isCarriedFk(cp)) continue;
+                values.put(cp.column(), generateValue(cp, table, context, completedData,
+                        i, seqStart, rng, uniqueFk, rowCtx, values));
+            }
+            // ② expr 表达式列：引用仅限 ①/①′ 已生成的计划列（validateExprColumns 预检保证）
             for (GenerationPlan.ColumnPlan cp : plan.columns()) {
                 if (!"expr".equals(cp.mode())) continue;
                 values.put(cp.column(), exprValue(cp, values, table));
@@ -116,13 +124,14 @@ public class GenericExpander {
     private Object generateValue(GenerationPlan.ColumnPlan cp, TableMeta table, PipelineContext context,
                                  Map<String, Map<String, List<Object>>> completedData,
                                  int index, int seqStart, Random rng,
-                                 Map<String, List<Object>> uniqueFk, RowCtx rowCtx) {
+                                 Map<String, List<Object>> uniqueFk, RowCtx rowCtx,
+                                 Map<String, Object> rowValues) {
         return switch (cp.mode()) {
             case "fk" -> {
                 // 复合唯一键 fk 列：用预生成的组合级唯一分配（防撞唯一键）
                 List<Object> assigned = uniqueFk == null ? null : uniqueFk.get(cp.column());
                 if (assigned != null) yield assigned.get(index % assigned.size());
-                yield fkValue(cp, completedData, rng, rowCtx);
+                yield fkValue(cp, completedData, rng, rowCtx, rowValues);
             }
             case "alternate" -> alternateValue(cp, rowCtx);
             case "anchorPrice" -> anchorPriceValue(cp, completedData, rng);
@@ -200,7 +209,7 @@ public class GenericExpander {
     /** FK：从父表（或指定 ref_table）PK 池随机引用（跨现有 + 新增）；zipf=true 走幂律长尾 */
     private Object fkValue(GenerationPlan.ColumnPlan cp,
                            Map<String, Map<String, List<Object>>> completedData, Random rng,
-                           RowCtx rowCtx) {
+                           RowCtx rowCtx, Map<String, Object> rowValues) {
         String refTable = cp.param("ref_table");
         String refColumn = cp.param("ref_column") != null ? cp.param("ref_column") : "id";
         // 父引用列：直接取该行所属父行的 id。分组派生下父子归属在构造行上下文时已确定，
@@ -211,6 +220,20 @@ public class GenericExpander {
         }
         Map<String, List<Object>> parent = completedData.get(refTable);
         if (parent == null) return null;
+        // 携带列（params.follow）：值随同行锚定列锁定到同一父行。
+        // 如 cart.product_id 必须等于该行 sku_id 所属商品的 id——不锁的话两列各自独立取样，
+        // 条目会自相矛盾（购物车挂着"高配版"SKU 却指向另一个商品的商品号）。
+        String follow = cp.param("follow");
+        if (follow != null && !follow.isBlank()) {
+            Object anchor = rowValues == null ? null : rowValues.get(follow);
+            List<Object> keys = parent.get("id");
+            List<Object> carried = parent.get(refColumn);
+            if (anchor != null && keys != null && carried != null) {
+                int idx = keys.indexOf(anchor);
+                if (idx >= 0 && idx < carried.size()) return carried.get(idx);
+            }
+            // 锚定列无值 / 父表查不到 → 落到下方随机取样（不抛：锚定列可能本身就是 null 占位）
+        }
         List<Object> pool = parent.get(refColumn);
         if (pool == null || pool.isEmpty()) return null;
         // 幂律长尾（修 D6）：少数父值被引用多、多数少——订单在用户间呈长尾分布
@@ -218,6 +241,13 @@ public class GenericExpander {
             return pool.get(Zipf.zipfPick(pool.size(), rng));
         }
         return pool.get(rng.nextInt(pool.size()));
+    }
+
+    /** 是否为携带列 fk（params.follow 指向同行锚定列）：生成顺序上必须排在锚定列之后 */
+    private static boolean isCarriedFk(GenerationPlan.ColumnPlan cp) {
+        if (!"fk".equals(cp.mode())) return false;
+        String follow = cp.param("follow");
+        return follow != null && !follow.isBlank();
     }
 
     /** 价格锚点派生（修 D4/D6）：父表锚点价 × 系数（如 0.8/1.0/1.2），跨现有 + 新增 */
