@@ -23,6 +23,9 @@ public final class DbConnections {
         String port = orDefault(db.get("dbPort"), "3306");
         String user = orDefault(db.get("dbUser"), "root");
         String pass = db.get("dbPassword");
+        if (pass == null || pass.isBlank()) {
+            pass = serverPassword();   // 前端留空 → 用服务端 .env 注入的凭证（密码不经 HTTP 往返）
+        }
         String schema = orDefault(db.get("dbSchema"), "");
         String url = "jdbc:mysql://" + host + ":" + port + "/" + schema
                 + "?useSSL=false&serverTimezone=Asia/Shanghai&rewriteBatchedStatements=true"
@@ -30,6 +33,16 @@ public final class DbConnections {
         DriverManagerDataSource ds = new DriverManagerDataSource(url, user, pass == null ? "" : pass);
         ds.setDriverClassName("com.mysql.cj.jdbc.Driver");
         return ds;
+    }
+
+    /**
+     * 服务端凭证兜底：{@code /api/config} 不再回传密码，前端密码框留空时走这里。
+     * 依次查系统属性与环境变量（启动脚本 {@code set -a; . ./.env} 即注入环境变量）。
+     */
+    private static String serverPassword() {
+        String p = System.getProperty("DB_PASSWORD");
+        if (p == null || p.isBlank()) p = System.getenv("DB_PASSWORD");
+        return p == null ? "" : p;
     }
 
     /** 从 DataSource 创建确定性 JDBC 通道（JdbcTemplate + 事务模板） */

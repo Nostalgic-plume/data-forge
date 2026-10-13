@@ -91,7 +91,8 @@ public class DataForgeApiController {
         cfg.put("dbHost", System.getProperty("DB_HOST", "localhost"));
         cfg.put("dbPort", System.getProperty("DB_PORT", "3306"));
         cfg.put("dbUser", System.getProperty("DB_USER", "root"));
-        cfg.put("dbPassword", System.getProperty("DB_PASSWORD", ""));
+        // dbPassword 刻意不回传：凭证不得经 HTTP 明文暴露（哪怕绑定在 localhost）。
+        // 前端密码框留空即表示"用服务端 .env 注入的凭证"，见 DbConnections.dataSource 的兜底。
         cfg.put("dbSchema", Defaults.schema());
         cfg.put("projectPath", System.getProperty("PROJECT_PATH", ""));
         cfg.put("skills", List.of("通用", "电商"));   // skill 选择（PLAN 决策 #11，垂直清单扩展点）

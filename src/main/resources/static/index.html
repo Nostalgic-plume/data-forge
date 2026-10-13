@@ -103,7 +103,7 @@
       </div>
       <div class="row">
         <div style="flex:1"><label>用户名</label><input id="dbUser" placeholder="root"></div>
-        <div style="flex:1"><label>密码</label><input id="dbPassword" type="password"></div>
+        <div style="flex:1"><label>密码</label><input id="dbPassword" type="password" placeholder="留空 = 用服务端 .env 配置"></div>
       </div>
       <div class="row">
         <div style="flex:3"><label>项目路径（可选）</label><input id="projectPath" placeholder="如 D:/your-project"></div>
@@ -583,9 +583,10 @@ $('btnHistory').onclick = async () => {
 
 /* 初始化：预填配置 */
 fetch('/api/config').then(r=>r.json()).then(c => {
-  db = { dbHost:c.dbHost, dbPort:c.dbPort, dbUser:c.dbUser, dbPassword:c.dbPassword, dbSchema:c.dbSchema };
+  db = { dbHost:c.dbHost, dbPort:c.dbPort, dbUser:c.dbUser, dbPassword:'', dbSchema:c.dbSchema };
   $('dbHost').value=c.dbHost; $('dbPort').value=c.dbPort; $('dbUser').value=c.dbUser;
-  $('dbPassword').value=c.dbPassword;
+  // 密码不由后端回传（避免凭证经 HTTP 明文暴露）：留空即用服务端 .env 注入的凭证
+  $('dbPassword').value='';
   // dbSchema 是下拉框：预填已保存库名（未测试连接时插入一个手动选项）
   const sel = $('dbSchema');
   if (c.dbSchema) {
