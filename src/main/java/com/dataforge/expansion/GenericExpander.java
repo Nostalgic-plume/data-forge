@@ -322,10 +322,17 @@ public class GenericExpander {
         int[] range = parseRowsPerParent(plan.rowsPerParent());
         int min = range[0];
         int max = Math.max(min, range[1]);
-        // 安全阀：target 不足以支撑"每父行至少 min 条"时下调 min，
-        // 否则 CountDistribution 的校准循环（total > target 时找 >min 的减）无法收敛
-        min = Math.max(0, Math.min(min, target / parentIds.size()));
-        if (max < min) max = min;
+        // 双向安全阀（必须成对，否则死循环）：CountDistribution 的校准循环在两侧都可能收敛不了——
+        //   区间下界过高时（parentCount * min > target）减项找不到可减的（全是 min）→ 无限循环；
+        //   区间上界过低时（parentCount * max < target）补项永远补不满（全到 max）→ 无限循环。
+        // 实测踩中后者：product 目标 300 行而父表 category 仅 24 行，rowsPerParent="2-5"
+        // 最多只能派生 120 行，补项循环空转（表现为生成请求永久挂起、无任何日志）。
+        // 夹紧方式：以 target/parentCount 的均值为准——rowsPerParent 是"每父行典型值"，
+        // 当目标行数与该均值的比值偏离它时，以 target 为准。
+        int avgFloor = target / parentIds.size();
+        int avgCeil = (int) Math.ceil((double) target / parentIds.size());
+        min = Math.max(0, Math.min(min, avgFloor));
+        max = Math.max(Math.max(min, max), avgCeil);
         int[] counts = CountDistribution.assign(parentIds.size(), min, max,
                 uniformWeights(max - min + 1), target, rng);
         for (int p = 0; p < parentIds.size(); p++) {
