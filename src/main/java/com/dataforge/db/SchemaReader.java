@@ -62,8 +62,13 @@ public class SchemaReader {
             List<String> uniqueKeys = buildUniqueKeys(uksByTable.getOrDefault(tableName, List.of()));
             tables.add(new TableMeta(tableName, colDefs, fkDefs, uniqueKeys));
         }
-        // 隐式 FK 推断（与 DdlParser 一致）：列名 "xxx_id" 且 xxx 为表名 → FK(xxx_id → xxx.id)
-        // 很多库不建显式外键约束（如 shop），依赖 xxx_id 命名约定
+        // 隐式 FK 推断（与 DdlParser 一致）：列名 "xxx_id" 且能唯一对应到某张表 → FK(xxx_id → xxx.id)
+        // 很多库不建显式外键约束（如 shop），只能依赖 xxx_id 命名约定。三级匹配：
+        //   ① 精确      product_id      → product
+        //   ② 复数      order_id        → orders
+        //   ③ 前缀命名  conversation_id → chat_conversation（要求唯一命中，避免歧义）
+        // 必须尽量推全：依赖图（TopologicalSorter）与 FkAlloc 都以本方法推断的外键为唯一数据源，
+        // 漏推会使父子表并发展开，父引用列在展开阶段静默取到 null（落库才暴露）。
         Set<String> tableNames = tables.stream().map(TableMeta::name).collect(java.util.stream.Collectors.toSet());
         List<TableMeta> withImplicitFk = new ArrayList<>();
         for (TableMeta t : tables) {
@@ -71,8 +76,18 @@ public class SchemaReader {
             for (ColumnDef c : t.columns()) {
                 if (c.name().endsWith("_id") && !c.primaryKey()
                         && inferred.stream().noneMatch(f -> f.column().equals(c.name()))) {
-                    String refTable = c.name().substring(0, c.name().length() - 3);
-                    if (tableNames.contains(refTable)) {
+                    String base = c.name().substring(0, c.name().length() - 3);
+                    String refTable = null;
+                    if (tableNames.contains(base)) {
+                        refTable = base;
+                    } else if (tableNames.contains(base + "s")) {
+                        refTable = base + "s";
+                    } else {
+                        List<String> suffixHits = tableNames.stream()
+                                .filter(n -> n.endsWith("_" + base)).toList();
+                        if (suffixHits.size() == 1) refTable = suffixHits.get(0);
+                    }
+                    if (refTable != null) {
                         inferred.add(new ForeignKeyDef(c.name(), refTable, "id"));
                     }
                 }
