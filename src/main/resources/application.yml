@@ -29,8 +29,11 @@ dataforge:
   # --mock-llm 干跑模式：注入确定性 MockLlmClient，无需真实 key
   mock-llm: false
   seed: 42
-  batch-size: 100
-  max-concurrency: 8
+  # 批量与并发改为从 .env 读取：写死字面量会让 .env 里的同名配置形同虚设。
+  # 推理型模型（响应含 reasoning_content）单批行数必须收敛——batch=100 时单次输出
+  # 可达 6000+ tokens，既拖长响应（易触发 180s 超时）又会被输出上限截断。
+  batch-size: ${DEFAULT_BATCH_SIZE:30}
+  max-concurrency: ${DEFAULT_MAX_CONCURRENCY:8}
   # PK 策略：sequential（自增语义，默认）| snowflake
   pk-strategy: sequential
   # 生成缓存目录（runFingerprint + 表名 → 产物 JSON）
