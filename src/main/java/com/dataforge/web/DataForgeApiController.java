@@ -302,16 +302,53 @@ public class DataForgeApiController {
         resp.put("rowRecommend", result.rowRecommend());
         resp.put("elapsedMs", System.currentTimeMillis() - start);
         history.record("analyze", Map.of("schema", schema, "tables", tableList.size()));
-        // 落盘 project_rules.json（唯一参数源：后续生成/校验自动加载，刷新不丢失）
+        // 落盘 project_rules.json + generation-plan.json（唯一参数源：后续生成/校验自动加载，刷新不丢失）
         try {
             java.nio.file.Path pf = java.nio.file.Path.of("project_rules.json");
             objectMapper.writerWithDefaultPrettyPrinter().writeValue(pf.toFile(), result.rules());
+            // 生成计划必须一并落盘：analyze 响应体只含 name/builder/recommend/columns，
+            // 不含 parent/rowsPerParent，调用方无法自行拼出计划文件；不落盘则后续生成会加载
+            // 上一版（可能来自不同 schema）的陈旧计划，本次分析结果白白丢失。
+            java.nio.file.Path planFile = java.nio.file.Path.of("generation-plan.json");
+            objectMapper.writerWithDefaultPrettyPrinter().writeValue(planFile.toFile(), result.plan());
             resp.put("saved", true);
         } catch (Exception e) {
             resp.put("saved", false);
-            log.warn("project_rules 落盘失败: {}", e.getMessage());
+            log.warn("分析产物落盘失败: {}", e.getMessage());
         }
         return resp;
+    }
+
+    /**
+     * 解析本次生成用的计划：优先加载人工确认过的落盘计划（generation-plan.json），
+     * 缺失 / 解析失败 / 未覆盖本次全部表 → 回退现场分析。
+     *
+     * <p>落盘计划是唯一的人工干预入口——分析 agent 的 PlanBuilder 是确定性启发式，
+     * 在无物理外键的库上会判错父子关系（进而把外键列退化成常量），必须支持人工修正后生效；
+     * 回退现场分析保证计划文件缺失时流程不中断。</p>
+     */
+    private GenerationPlan resolvePlan(List<TableMeta> genTables) {
+        java.nio.file.Path pf = java.nio.file.Path.of("generation-plan.json");
+        if (java.nio.file.Files.exists(pf)) {
+            try {
+                GenerationPlan loaded = objectMapper.readValue(pf.toFile(), GenerationPlan.class);
+                if (loaded != null && !loaded.tables().isEmpty()) {
+                    Set<String> planned = loaded.tables().stream()
+                            .map(GenerationPlan.TablePlan::table).collect(Collectors.toSet());
+                    List<String> missing = genTables.stream().map(TableMeta::name)
+                            .filter(n -> !planned.contains(n)).toList();
+                    if (missing.isEmpty()) {
+                        log.info("加载落盘生成计划 generation-plan.json（{} 表），跳过现场分析",
+                                loaded.tables().size());
+                        return loaded;
+                    }
+                    log.warn("落盘计划未覆盖本次全部表（缺 {}），回退现场分析", missing);
+                }
+            } catch (Exception e) {
+                log.warn("generation-plan.json 解析失败（回退现场分析）: {}", e.getMessage());
+            }
+        }
+        return analysisAgent.analyzeTables(genTables).plan();
     }
 
     // ---- ③ 生成（逐表行数 → 配置驱动生成 → 落库） ----
@@ -333,13 +370,13 @@ public class DataForgeApiController {
         Map<String, Integer> rowCounts = closure.rowCounts();
         List<TableMeta> genTables = tables.stream().filter(t -> closure.tables().contains(t.name())).toList();
 
-        // 配置驱动：分析产出生成计划 → 随本次请求传入（不放生成 agent 单例）
-        AnalysisAgent.AnalysisResult analyzed = analysisAgent.analyzeTables(genTables);
+        // 配置驱动：优先加载人工确认过的落盘计划（generation-plan.json），缺失/不匹配才现场分析
+        GenerationPlan plan = resolvePlan(genTables);
 
         GenerationAgent.GenerationResult result = generationAgent.generate(
                 new GenerationAgent.GenerationRequest(genTables, rulesService.currentRules(), rowCounts,
                         IncrementalConfig.full(), props.seed(), props.batchSize(), props.maxConcurrency(),
-                        analyzed.plan()),
+                        plan),
                 false);
         // 动态落库 + 校验
         s.staging.drop(schema);
@@ -386,10 +423,10 @@ public class DataForgeApiController {
         Map<String, GeneratedData> baseline = s.staging.read(schema, genTables);
         boolean baselineEmpty = baseline.values().stream().allMatch(g -> g.rowCount() == 0);
 
-        // 生成计划（配置驱动，复用 /generate 逻辑）；replan=false 时跳过 LLM 重规划
-        GenerationPlan plan = replan ? analysisAgent.analyzeTables(genTables).plan() : GenerationPlan.empty();
+        // 生成计划（配置驱动，复用 /generate 逻辑）；replan=false 时跳过规划，退回内置模板 fallback
+        GenerationPlan plan = replan ? resolvePlan(genTables) : GenerationPlan.empty();
         if (!replan) {
-            log.warn("replan=false：跳过分析规划，本次生成退回内置模板 fallback（计划不随请求传入）");
+            log.warn("replan=false：跳过规划，本次生成退回内置模板 fallback（计划不随请求传入）");
         }
 
         ProjectRules rules = rulesService.currentRules();
