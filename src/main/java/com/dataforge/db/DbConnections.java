@@ -24,7 +24,7 @@ public final class DbConnections {
         String user = orDefault(db.get("dbUser"), "root");
         String pass = db.get("dbPassword");
         if (pass == null || pass.isBlank()) {
-            pass = serverPassword();   // 前端留空 → 用服务端 .env 注入的凭证（密码不经 HTTP 往返）
+            pass = serverPassword(host, port, user);   // 前端留空 → 仅当目标就是服务端自己配置的库
         }
         String schema = orDefault(db.get("dbSchema"), "");
         String url = "jdbc:mysql://" + host + ":" + port + "/" + schema
@@ -37,12 +37,24 @@ public final class DbConnections {
 
     /**
      * 服务端凭证兜底：{@code /api/config} 不再回传密码，前端密码框留空时走这里。
-     * 依次查系统属性与环境变量（启动脚本 {@code set -a; . ./.env} 即注入环境变量）。
+     *
+     * <p><b>仅在 host/port/user 与服务端配置完全一致时才返回凭证。</b>这三项是客户端可控的，
+     * 不加这层判断就等于：任何人构造 {@code {"dbHost":"攻击者的主机","dbUser":"root"}} 都能让
+     * 服务端把真实密码送过去——MySQL 认证握手足以让对端拿到凭证（比明文回显更隐蔽）。
+     * 连别的库必须自带密码。</p>
      */
-    private static String serverPassword() {
-        String p = System.getProperty("DB_PASSWORD");
-        if (p == null || p.isBlank()) p = System.getenv("DB_PASSWORD");
-        return p == null ? "" : p;
+    static String serverPassword(String host, String port, String user) {
+        if (!cfg("DB_HOST", "localhost").equalsIgnoreCase(host)) return "";
+        if (!cfg("DB_PORT", "3306").equals(port)) return "";
+        if (!cfg("DB_USER", "root").equals(user)) return "";
+        return cfg("DB_PASSWORD", "");
+    }
+
+    /** 配置项读取：系统属性优先，其次环境变量，最后默认值（启动脚本 set -a; . ./.env 注入环境变量） */
+    private static String cfg(String key, String dflt) {
+        String v = System.getProperty(key);
+        if (v == null || v.isBlank()) v = System.getenv(key);
+        return (v == null || v.isBlank()) ? dflt : v;
     }
 
     /** 从 DataSource 创建确定性 JDBC 通道（JdbcTemplate + 事务模板） */
