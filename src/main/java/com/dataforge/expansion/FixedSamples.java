@@ -22,6 +22,14 @@ public final class FixedSamples {
 
     private FixedSamples() {}
 
+    /**
+     * 是否为固定样本表（role / admin）。
+     *
+     * <p><b>与 generation-plan.json 的一致性约束</b>：{@code PkGen} 对这两张表只登记<b>固定 id
+     * 池</b>（role 为 100/101/102 三条）。若 plan 把它们判成 {@code source} 而走 LLM 分支、
+     * 且请求行数超过固定条数，多出来的行拿不到 id → 整表失败（实测：请求 role 5 行时复现）。
+     * 故它们在 plan 里必须标 {@code fixed}——{@code PlanDrivenExpansionTest} 的全表用例会锁住这点。</p>
+     */
     public static boolean isFixed(String tableName) {
         return "role".equals(tableName) || "admin".equals(tableName);
     }

@@ -133,6 +133,30 @@ class PlanDrivenExpansionTest {
     }
 
     @Test
+    void 全表计划驱动生成_引用与唯一键不变量成立() throws Exception {
+        // 计划驱动路径此前零覆盖，补第一个测试（cart）时就炸出了 product_id 脱钩。
+        // 这条用例把整条路径的所有表一次跑一遍，兜住同类问题。
+        GenerationPlan plan = realPlan();
+        Map<String, Integer> requested = Map.ofEntries(
+                Map.entry("user", 15), Map.entry("category", 6), Map.entry("brand", 5),
+                Map.entry("product", 15), Map.entry("sku", 45), Map.entry("shop", 5),
+                Map.entry("address", 15), Map.entry("user_role", 15), Map.entry("user_status_log", 15),
+                Map.entry("orders", 20), Map.entry("order_item", 50), Map.entry("cart", 30),
+                Map.entry("chat_conversation", 10), Map.entry("chat_message", 25),
+                Map.entry("chat_feedback", 10), Map.entry("role", 5), Map.entry("permission", 8),
+                Map.entry("role_permission", 10));
+        Map<String, GeneratedData> data = generate(plan, requested);
+
+        assertTrue(data.size() >= 15, "应覆盖计划内的绝大多数表，实际 " + data.size() + " 张");
+
+        DataValidator.ValidationSummary summary =
+                DataValidator.validate(closure(requested.keySet()).stream().toList(), data, Set.of());
+        assertEquals(0, summary.fkOrphanCount(),
+                "全表生成后任何 FK 都不应悬挂（隐含：拓扑排序与父池引用整体正确）");
+        assertEquals(0, summary.uniqueConflictCount(), "唯一键不应冲突");
+    }
+
+    @Test
     void 结构化列_JSON形态合法且不经LLM() throws Exception {
         // specs / images / detail 原先走 LLM 生成内嵌 JSON——转义不可靠会撑破外层结构，
         // 实测会让整表失败。改由本地确定性构造后，形态必须始终是合法 JSON / 可控文本。
