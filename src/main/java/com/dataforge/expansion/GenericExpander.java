@@ -2,6 +2,7 @@ package com.dataforge.expansion;
 
 import com.dataforge.derivation.ExpressionEvaluator;
 import com.dataforge.derivation.ExpressionException;
+import com.dataforge.expansion.primitive.CountDistribution;
 import com.dataforge.model.*;
 import com.dataforge.model.PipelineContext;
 import org.springframework.stereotype.Component;
@@ -28,7 +29,25 @@ public class GenericExpander {
     private static final org.slf4j.Logger log =
             org.slf4j.LoggerFactory.getLogger(GenericExpander.class);
 
-    /** 从生成计划生成派生表（target = context.rowCount，FK 从父表池随机引用） */
+    /**
+     * 行上下文：该行属于哪个父行、在父行内的序号。
+     *
+     * <p>配置驱动的派生是"生成 N 行 + 每行独立取值"，本身不携带父子归属信息，
+     * 于是既表达不了"每个父行至少 1 条"（随机挂载必然留下空洞），也表达不了
+     * "父行内序列"逻辑（如客服会话的 role 交替）。按父行分组派生后，
+     * 父引用列可直接取 parentId，列模式也可消费 indexInParent。</p>
+     *
+     * @param parentId      所属父行主键；无父行感知时为 null
+     * @param indexInParent 在父行内的序号（0 起）；无父行感知时为 -1
+     * @param parentTable   父表名；无父行感知时为 null
+     */
+    record RowCtx(Object parentId, int indexInParent, String parentTable) {
+        static RowCtx none() {
+            return new RowCtx(null, -1, null);
+        }
+    }
+
+    /** 从生成计划生成派生表（按父行分组派生；无父行时退化为逐行独立生成） */
     public List<DataRow> generate(GenerationPlan.TablePlan plan, TableMeta table,
                                   PipelineContext context,
                                   Map<String, Map<String, List<Object>>> completedData) {
@@ -41,13 +60,16 @@ public class GenericExpander {
         // 复合唯一键 fk 列：组合级唯一取样（如 cart(user_id,sku_id)/user_role(user_id,role_id)，
         // 随机引用会撞唯一键导致 MySQL 落库拒绝）
         Map<String, List<Object>> uniqueFk = buildUniqueKeyAssignments(plan, table, completedData, target, rng);
+        // 按父行分组派生：每父行 rowsPerParent 条（行数精确校准到 target），行内序号供列模式消费
+        List<RowCtx> rowContexts = buildRowContexts(plan, completedData, target, rng);
         List<DataRow> rows = new ArrayList<>(target);
         for (int i = 0; i < target; i++) {
+            RowCtx rowCtx = rowContexts.get(i);
             Map<String, Object> values = new LinkedHashMap<>();
             // ① 非 expr 计划列先生成（expr 延后，保证可引用同表已算出的列，§H8 列序）
             for (GenerationPlan.ColumnPlan cp : plan.columns()) {
                 if ("expr".equals(cp.mode())) continue;
-                values.put(cp.column(), generateValue(cp, table, context, completedData, i, seqStart, rng, uniqueFk));
+                values.put(cp.column(), generateValue(cp, table, context, completedData, i, seqStart, rng, uniqueFk, rowCtx));
             }
             // ② expr 表达式列：引用仅限 ① 已生成的计划列（validateExprColumns 预检保证）
             for (GenerationPlan.ColumnPlan cp : plan.columns()) {
@@ -90,14 +112,15 @@ public class GenericExpander {
     private Object generateValue(GenerationPlan.ColumnPlan cp, TableMeta table, PipelineContext context,
                                  Map<String, Map<String, List<Object>>> completedData,
                                  int index, int seqStart, Random rng,
-                                 Map<String, List<Object>> uniqueFk) {
+                                 Map<String, List<Object>> uniqueFk, RowCtx rowCtx) {
         return switch (cp.mode()) {
             case "fk" -> {
                 // 复合唯一键 fk 列：用预生成的组合级唯一分配（防撞唯一键）
                 List<Object> assigned = uniqueFk == null ? null : uniqueFk.get(cp.column());
                 if (assigned != null) yield assigned.get(index % assigned.size());
-                yield fkValue(cp, completedData, rng);
+                yield fkValue(cp, completedData, rng, rowCtx);
             }
+            case "alternate" -> alternateValue(cp, rowCtx);
             case "anchorPrice" -> anchorPriceValue(cp, completedData, rng);
             case "seq" -> seqValue(cp, index, seqStart);
             case "weighted" -> weightedValue(cp, rng);
@@ -172,9 +195,16 @@ public class GenericExpander {
 
     /** FK：从父表（或指定 ref_table）PK 池随机引用（跨现有 + 新增）；zipf=true 走幂律长尾 */
     private Object fkValue(GenerationPlan.ColumnPlan cp,
-                           Map<String, Map<String, List<Object>>> completedData, Random rng) {
+                           Map<String, Map<String, List<Object>>> completedData, Random rng,
+                           RowCtx rowCtx) {
         String refTable = cp.param("ref_table");
         String refColumn = cp.param("ref_column") != null ? cp.param("ref_column") : "id";
+        // 父引用列：直接取该行所属父行的 id。分组派生下父子归属在构造行上下文时已确定，
+        // 再随机取样会让"每父行 N 条"的分组与父引用值脱节（分组算出的父行 ≠ 随机挂到的父行）
+        if (rowCtx != null && rowCtx.parentId() != null && refTable != null
+                && refTable.equals(rowCtx.parentTable()) && "id".equals(refColumn)) {
+            return rowCtx.parentId();
+        }
         Map<String, List<Object>> parent = completedData.get(refTable);
         if (parent == null) return null;
         List<Object> pool = parent.get(refColumn);
@@ -257,6 +287,88 @@ public class GenericExpander {
         if (values == null) return null;
         String[] pool = values.split(",");
         return pool[rng.nextInt(pool.length)].trim();
+    }
+
+    /**
+     * 序列交替：按父行内序号轮流取值（第 0 条取第一个值）。
+     *
+     * <p>用于"父行内有序"的列——如客服会话的 role 必须是 user/assistant 交替、
+     * 且以 user 开头。无父行上下文时退化为取第一个值。</p>
+     */
+    private Object alternateValue(GenerationPlan.ColumnPlan cp, RowCtx rowCtx) {
+        String values = cp.param("values");
+        if (values == null || values.isBlank()) return null;
+        String[] pool = values.split(",");
+        int idx = rowCtx != null && rowCtx.indexInParent() >= 0
+                ? rowCtx.indexInParent() % pool.length : 0;
+        return pool[idx].trim();
+    }
+
+    /**
+     * 构造行上下文：按父行分组派生，每父行 rowsPerParent 条，总数精确校准到 target。
+     *
+     * <p>无父表 / 父池为空时全部返回 none，退化为逐行独立生成（与改造前行为一致）。</p>
+     */
+    private List<RowCtx> buildRowContexts(GenerationPlan.TablePlan plan,
+                                          Map<String, Map<String, List<Object>>> completedData,
+                                          int target, Random rng) {
+        List<RowCtx> contexts = new ArrayList<>(target);
+        String parentTable = plan.parent();
+        List<Object> parentIds = parentTable == null ? null : parentPool(parentTable, completedData);
+        if (parentIds == null || parentIds.isEmpty()) {
+            for (int i = 0; i < target; i++) contexts.add(RowCtx.none());
+            return contexts;
+        }
+        int[] range = parseRowsPerParent(plan.rowsPerParent());
+        int min = range[0];
+        int max = Math.max(min, range[1]);
+        // 安全阀：target 不足以支撑"每父行至少 min 条"时下调 min，
+        // 否则 CountDistribution 的校准循环（total > target 时找 >min 的减）无法收敛
+        min = Math.max(0, Math.min(min, target / parentIds.size()));
+        if (max < min) max = min;
+        int[] counts = CountDistribution.assign(parentIds.size(), min, max,
+                uniformWeights(max - min + 1), target, rng);
+        for (int p = 0; p < parentIds.size(); p++) {
+            for (int k = 0; k < counts[p]; k++) {
+                contexts.add(new RowCtx(parentIds.get(p), k, parentTable));
+            }
+        }
+        // 防御性对齐（父池极小时 CountDistribution 仍可能偏差）
+        while (contexts.size() < target) contexts.add(RowCtx.none());
+        if (contexts.size() > target) contexts.subList(target, contexts.size()).clear();
+        return contexts;
+    }
+
+    /** 父表主键池（父引用列的取值来源） */
+    private List<Object> parentPool(String parentTable,
+                                    Map<String, Map<String, List<Object>>> completedData) {
+        Map<String, List<Object>> parent = completedData.get(parentTable);
+        return parent == null ? null : parent.get("id");
+    }
+
+    /** 解析 rowsPerParent："N" 或 "min-max"；缺省/非法 → [1,1] */
+    private static int[] parseRowsPerParent(String rowsPerParent) {
+        if (rowsPerParent == null || rowsPerParent.isBlank()) return new int[]{1, 1};
+        String s = rowsPerParent.trim();
+        try {
+            int dash = s.indexOf('-');
+            if (dash < 0) {
+                int n = Integer.parseInt(s);
+                return new int[]{n, n};
+            }
+            int lo = Integer.parseInt(s.substring(0, dash).trim());
+            int hi = Integer.parseInt(s.substring(dash + 1).trim());
+            return new int[]{Math.min(lo, hi), Math.max(lo, hi)};
+        } catch (NumberFormatException e) {
+            return new int[]{1, 1};
+        }
+    }
+
+    /** 均匀权重（CountDistribution 要求长度 = max-min+1） */
+    private static int[] uniformWeights(int len) {
+        int[] w = new int[Math.max(1, len)];
+        java.util.Arrays.fill(w, 1);
+        return w;
     }
 
     /** 日期：params.range="-90d,0d"（相对今天的天数区间） */
