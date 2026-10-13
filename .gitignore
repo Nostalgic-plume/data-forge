@@ -45,3 +45,7 @@ frontend/dist/
 *.log
 cache/
 .dataforge/
+
+# AI 助手配置（含本机绝对路径与个人配置，不入库）
+.claude/
+AGENTS.md
