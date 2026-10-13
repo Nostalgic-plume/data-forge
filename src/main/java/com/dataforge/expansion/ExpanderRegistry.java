@@ -11,14 +11,22 @@ import java.util.List;
 /**
  * 派生器注册表（组装全部 Expander）。
  *
- * <p><b>库无关性证明</b>：4 张表（sku/address/user_role/shop）用声明式配置
- * {@link DerivedTableConfig} 驱动，换库只需新写配置；3 张表（orders/order_item/cart）
- * 因特殊逻辑保留 Java 派生器：
+ * <p><b>定位：无计划时的内置 fallback 模板</b>。正常运行的生成由落盘的
+ * {@code generation-plan.json} 驱动（{@link ExpansionEngine} 判定为计划优先），
+ * 这里注册的实现只在计划缺失、且现场分析也没产出计划时兜底。</p>
+ *
+ * <p><b>实际生效面（2026-10-13 复核）</b>：shop 库的计划已覆盖
+ * sku/address/user_role/cart（builder=derived）与 shop（builder=source），
+ * 这 5 张表在常态下<b>不会</b>走到本表的任何实现；真正由本表生成的只有
+ * orders / order_item（它们不在计划内）：
  * <ul>
  *   <li>orders：状态机 + 状态-时间线联动（声明式难表达时序依赖）</li>
  *   <li>order_item：总行数精确达标 + 多表快照回填</li>
- *   <li>cart：随机组合 + 唯一约束去重（非均匀派生）</li>
- * </ul></p>
+ * </ul>
+ * 其中 cart 曾以"随机组合 + 唯一约束去重"为由保留 Java 实现，其约束在计划驱动下
+ * 已由 {@code GenericExpander} 的复合唯一键取样承担（另见携带列 follow：修复
+ * product_id 与 sku_id 的从属关系）。其余条目属历史遗留，待步骤 5
+ * （引擎代码去业务字面量）统一清理。</p>
  */
 @Configuration
 public class ExpanderRegistry {
