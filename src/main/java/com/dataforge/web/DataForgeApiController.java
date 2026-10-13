@@ -1,6 +1,7 @@
 package com.dataforge.web;
 
 import com.dataforge.agent.*;
+import com.dataforge.config.Defaults;
 import com.dataforge.config.GeneratorProperties;
 import com.dataforge.correction.CorrectionEngine;
 import com.dataforge.db.DbConnections;
@@ -91,7 +92,7 @@ public class DataForgeApiController {
         cfg.put("dbPort", System.getProperty("DB_PORT", "3306"));
         cfg.put("dbUser", System.getProperty("DB_USER", "root"));
         cfg.put("dbPassword", System.getProperty("DB_PASSWORD", ""));
-        cfg.put("dbSchema", System.getProperty("DB_SCHEMA", "shop"));
+        cfg.put("dbSchema", Defaults.schema());
         cfg.put("projectPath", System.getProperty("PROJECT_PATH", ""));
         cfg.put("skills", List.of("通用", "电商"));   // skill 选择（PLAN 决策 #11，垂直清单扩展点）
         cfg.put("cacheStatus", rulesExist ? "RULES_EXISTS" : "NONE");  // 缓存状态徽标
@@ -102,7 +103,7 @@ public class DataForgeApiController {
     @PostMapping("/parse")
     public Map<String, Object> parse(@RequestBody Map<String, String> req) {
         Session s = new Session(req);
-        String schema = orDefault(req.get("dbSchema"), "shop");
+        String schema = orDefault(req.get("dbSchema"), Defaults.schema());
         List<TableMeta> tables = s.schemaReader.readTables(schema);
         List<Map<String, Object>> list = tables.stream().map(t -> {
             Map<String, Object> m = new LinkedHashMap<>();
@@ -123,7 +124,7 @@ public class DataForgeApiController {
     @PostMapping("/recommend-rows")
     public Map<String, Object> recommendRows(@RequestBody Map<String, String> req) {
         Session s = new Session(req);
-        String schema = orDefault(req.get("dbSchema"), "shop");
+        String schema = orDefault(req.get("dbSchema"), Defaults.schema());
         List<TableMeta> tables = s.schemaReader.readTables(schema);
         Map<String, Integer> rec = llm.recommendRows(DefaultAnalysisAgent.buildSchemaSummary(tables));
         Map<String, Object> resp = new LinkedHashMap<>();
@@ -189,7 +190,7 @@ public class DataForgeApiController {
     @PostMapping("/preview")
     public Map<String, Object> preview(@RequestBody Map<String, String> req) {
         Session s = new Session(req);
-        String schema = orDefault(req.get("dbSchema"), "shop");
+        String schema = orDefault(req.get("dbSchema"), Defaults.schema());
         List<TableMeta> allTables = s.schemaReader.readTables(schema);
         Map<String, GeneratedData> data = s.staging.read(schema, allTables);
         Map<String, Object> preview = new LinkedHashMap<>();
@@ -206,7 +207,7 @@ public class DataForgeApiController {
     @PostMapping("/publish")
     public Map<String, Object> publish(@RequestBody Map<String, Object> req) throws Exception {
         Session s = new Session(toStringMap(req));
-        String schema = orDefault(toStringMap(req).get("dbSchema"), "shop");
+        String schema = orDefault(toStringMap(req).get("dbSchema"), Defaults.schema());
         boolean confirmed = Boolean.TRUE.equals(req.get("confirmed"));
         @SuppressWarnings("unchecked")
         Map<String, String> policies = (Map<String, String>) req.getOrDefault("policies", Map.of());
@@ -268,7 +269,7 @@ public class DataForgeApiController {
     public Map<String, Object> analyze(@RequestBody Map<String, Object> req) {
         long start = System.currentTimeMillis();
         Session s = new Session(toStringMap(req));
-        String schema = orDefault(toStringMap(req).get("dbSchema"), "shop");
+        String schema = orDefault(toStringMap(req).get("dbSchema"), Defaults.schema());
         @SuppressWarnings("unchecked")
         List<String> selected = (List<String>) req.getOrDefault("selected", List.of());
         List<TableMeta> allTables = s.schemaReader.readTables(schema);
@@ -362,7 +363,7 @@ public class DataForgeApiController {
     public Map<String, Object> generate(@RequestBody Map<String, Object> req) throws Exception {
         long start = System.currentTimeMillis();
         Session s = new Session(toStringMap(req));
-        String schema = orDefault(toStringMap(req).get("dbSchema"), "shop");
+        String schema = orDefault(toStringMap(req).get("dbSchema"), Defaults.schema());
         @SuppressWarnings("unchecked")
         Map<String, Integer> rows = (Map<String, Integer>) req.getOrDefault("rows", Map.of());
         if (rows.isEmpty()) {
@@ -407,7 +408,7 @@ public class DataForgeApiController {
     public Map<String, Object> incremental(@RequestBody Map<String, Object> req) throws Exception {
         long start = System.currentTimeMillis();
         Session s = new Session(toStringMap(req));
-        String schema = orDefault(toStringMap(req).get("dbSchema"), "shop");
+        String schema = orDefault(toStringMap(req).get("dbSchema"), Defaults.schema());
         @SuppressWarnings("unchecked")
         Map<String, Integer> rows = (Map<String, Integer>) req.getOrDefault("rows", Map.of());
         if (rows.isEmpty()) {
@@ -492,7 +493,7 @@ public class DataForgeApiController {
     public Map<String, Object> correct(@RequestBody Map<String, String> req) throws Exception {
         long start = System.currentTimeMillis();
         Session s = new Session(req);
-        String schema = orDefault(req.get("dbSchema"), "shop");
+        String schema = orDefault(req.get("dbSchema"), Defaults.schema());
         List<TableMeta> allTables = s.schemaReader.readTables(schema);
         Map<String, GeneratedData> data = s.staging.read(schema, allTables);
         List<TableMeta> tables = allTables.stream().filter(t -> data.containsKey(t.name())).toList();
@@ -520,7 +521,7 @@ public class DataForgeApiController {
     public Map<String, Object> score(@RequestBody Map<String, String> req) {
         long start = System.currentTimeMillis();
         Session s = new Session(req);
-        String schema = orDefault(req.get("dbSchema"), "shop");
+        String schema = orDefault(req.get("dbSchema"), Defaults.schema());
         List<TableMeta> allTables = s.schemaReader.readTables(schema);
         Map<String, GeneratedData> generated = s.staging.read(schema, allTables);
         List<TableMeta> tables = allTables.stream().filter(t -> generated.containsKey(t.name())).toList();
@@ -563,7 +564,7 @@ public class DataForgeApiController {
     @PostMapping("/export-sql")
     public Map<String, Object> exportSql(@RequestBody Map<String, String> req) {
         Session s = new Session(req);
-        String schema = orDefault(req.get("dbSchema"), "shop");
+        String schema = orDefault(req.get("dbSchema"), Defaults.schema());
         List<TableMeta> allTables = s.schemaReader.readTables(schema);
         Map<String, GeneratedData> data = s.staging.read(schema, allTables);
         StringBuilder sb = new StringBuilder();

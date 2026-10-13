@@ -1,5 +1,6 @@
 package com.dataforge.orchestration;
 
+import com.dataforge.config.Defaults;
 import com.dataforge.model.GenerationPlan;
 import org.bsc.langgraph4j.state.AgentState;
 
@@ -72,7 +73,7 @@ public class ForgeState extends AgentState {
         super(init);
     }
 
-    public String schema() { return this.<String>value(SCHEMA, "shop"); }
+    public String schema() { return this.<String>value(SCHEMA, Defaults.schema()); }
     public String mode() { return this.<String>value(MODE, MODE_FULL); }
     public boolean incremental() { return MODE_INCREMENTAL.equals(mode()); }
 
