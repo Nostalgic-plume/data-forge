@@ -111,4 +111,18 @@ public final class PipelineContext {
     public Random newRandom() {
         return new Random(seed);
     }
+
+    /**
+     * 派生随机源（带 salt）：同一 salt 恒等、不同 salt 不同序列。
+     *
+     * <p>用于<b>同一张表被多次分段生成</b>的场景——source 表按批生成时每批都派生一次随机源，
+     * 若都用 {@link #newRandom()}（同 seed），每批拿到<b>完全相同的序列</b>，整批本地列因此重复：
+     * 实测 200 行 user 只有 30 个不同手机号，数字恰好等于批次大小。</p>
+     *
+     * <p>用显式 salt（而非内部自增计数器）是为了<b>保住确定性</b>：批次是并发的，自增顺序不定，
+     * 而 salt 由"批起点行号"决定，与执行顺序无关，同种子重跑结果一致。</p>
+     */
+    public Random newRandom(long salt) {
+        return new Random(seed + salt * 0x9E3779B97F4A7C15L);
+    }
 }
