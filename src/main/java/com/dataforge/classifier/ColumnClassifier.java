@@ -108,6 +108,13 @@ public final class ColumnClassifier {
                 || name.endsWith("_email") || name.endsWith("_mail")) {
             return true;
         }
+        // 用户名 / 昵称：RuleDataGenerator 已有对应分支（格式确定），无需 LLM。
+        //   实测把它们留给 LLM 时，15000 行 user 要跑几十分钟且频繁超时返回空——
+        //   这类"格式确定"的列没有任何语义含量，交给 LLM 是纯粹的浪费。
+        if (name.equals("username") || name.endsWith("_username")
+                || name.equals("nickname") || name.endsWith("_nickname")) {
+            return true;
+        }
         // 身份证
         if (name.contains("id_card") || name.contains("idcard")
                 || name.equals("identity_card") || name.equals("id_no")
