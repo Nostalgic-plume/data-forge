@@ -28,8 +28,21 @@ final class SpecTemplates {
 
     private SpecTemplates() {}
 
+    /**
+     * 允许的模板路径形态：<b>项目根下的纯文件名</b>——不含目录分隔符、不含 {@code ..}。
+     *
+     * <p>当前 {@code specFile} 来自本地手工维护的 plan，能改它的人已控制机器，所以并非
+     * 现存漏洞；但 plan 将来若改由 Web 上传，这里就是任意文件读取的入口，而堵上只要一个白名单。</p>
+     */
+    private static final java.util.regex.Pattern SAFE_FILE =
+            java.util.regex.Pattern.compile("[A-Za-z0-9_\\-]+\\.json");
+
     static Map<String, Map<String, List<String>>> load(String path) {
         String p = (path == null || path.isBlank()) ? "category-specs.json" : path;
+        if (!SAFE_FILE.matcher(p).matches()) {
+            log.warn("规格模板路径非法（只允许项目根下的文件名，不得含路径分隔符与 ..）：{}", p);
+            return Map.of();
+        }
         return CACHE.computeIfAbsent(p, SpecTemplates::read);
     }
 
