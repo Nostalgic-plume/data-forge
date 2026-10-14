@@ -70,6 +70,13 @@ public class MockLlmClient implements DataLlm {
         return this;
     }
 
+    /** 单测断言用：收到过的全部提示词上下文（验证"按父表分组"是否真的把品类喂进去了） */
+    public java.util.List<String> seenContexts() {
+        return java.util.List.copyOf(seenContexts);
+    }
+
+    private final java.util.List<String> seenContexts = new ArrayList<>();
+
     @Override
     public List<Map<String, Object>> generateRows(String tableName, List<ColumnDef> llmCols,
                                                   int rowCount, String fkContext) {
@@ -78,6 +85,7 @@ public class MockLlmClient implements DataLlm {
         fault = failOnTable.get(tableName);
         if (fault != null) throw fault;
         callsByTable.merge(tableName, 1, Integer::sum);
+        seenContexts.add(fkContext == null ? "" : fkContext);
 
         int target = (int) Math.round(rowCount * (1 - shortfallRatio));
         List<Map<String, Object>> rows = new ArrayList<>(target);

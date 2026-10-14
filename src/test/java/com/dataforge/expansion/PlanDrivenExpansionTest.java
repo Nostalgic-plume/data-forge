@@ -144,6 +144,19 @@ class PlanDrivenExpansionTest {
     }
 
     @Test
+    void 语义列按父表分组_父分类上下文喂给LLM() throws Exception {
+        // 分类是 product 的父表：商品必须在分类之下生成。父表 6 行远小于本表 120 行时触发分组，
+        // 每组带上"本批记录全部属于父分类 X"的提示词（否则整表一段 prompt，风格单一且与分类无关）。
+        MockLlmClient mock = new MockLlmClient();
+        Map<String, GeneratedData> data = generate(realPlan(),
+                Map.of("category", 6, "product", 120), mock);
+
+        assertTrue(mock.seenContexts().stream().anyMatch(c -> c.contains("父分类")),
+                "分组回填应把父分类上下文给到 LLM，实际收到 " + mock.seenContexts().size() + " 条提示词");
+        assertEquals(120, data.get("product").rowCount(), "分组不应影响行数");
+    }
+
+    @Test
     void llm偶发漏字段_补差重填而不是整表判死() throws Exception {
         // 真实事故复现：product 400 行时某个批次返回的行里 description 为 null → 原先直接整表失败。
         // LLM 偶发不完整输出是常态，为一行缺失把整表判死太脆；这里确定性逼出那条路径。

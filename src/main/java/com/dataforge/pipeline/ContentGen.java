@@ -619,7 +619,7 @@ public final class ContentGen {
     private void fillLlmColumns(TableMeta table, List<DataRow> rows) {
         List<ColumnDef> llmCols = expansion.llmColumns(context.plan(), table);
         if (llmCols.isEmpty() || rows.isEmpty()) return;
-        List<Map<String, Object>> llmRows = fillRowsWithGapFill(table, llmCols, rows.size());
+        List<Map<String, Object>> llmRows = fillByParentGroup(table, llmCols, rows);
         for (int i = 0; i < rows.size(); i++) {
             for (ColumnDef c : llmCols) {
                 Object v = llmRows.get(i).get(c.name());
@@ -634,6 +634,64 @@ public final class ContentGen {
     }
 
     /**
+     * 按父表分组回填语义列：让同一父行（如同一商品分类）下的记录共享一段带父类名的提示词，
+     * <b>实现父驱动的生成</b>——分类是 product 的父表，商品就该在分类之下生成。
+     *
+     * <p>不这么做的话，整表共用一段 prompt、且分类是随机外键，两者永不相干：
+     * 1000 个商品会出同一种风格，而"华为手机归到家用电器"这类错配无法避免。</p>
+     *
+     * <p><b>判据保守</b>：只有父表行数明显小于本表（不足 1/10）才分组。否则像 orders(3000)
+     * 按 user(15000) 分会被切成大量碎片，每批过小、调用数暴涨，得不偿失。</p>
+     *
+     * <p><b>行序必须严格对齐</b>：按原行下标收集分组结果再还原——{@code fillBatched} 的注释
+     * 强调过，顺序错乱会把商品名配到别的商品上，比缺值更危险。</p>
+     */
+    private List<Map<String, Object>> fillByParentGroup(TableMeta table, List<ColumnDef> llmCols,
+                                                        List<DataRow> rows) {
+        GenerationPlan.TablePlan tp = context.plan() == null ? null : context.plan().tablePlan(table.name());
+        String parent = tp == null ? null : tp.parent();
+        if (parent == null) return fillRowsWithGapFill(table, llmCols, rows.size(), null);
+
+        String fkCol = table.foreignKeys().stream()
+                .filter(fk -> parent.equals(fk.refTable()))
+                .map(com.dataforge.model.ForeignKeyDef::column).findFirst().orElse(null);
+        Map<String, List<Object>> parentData = fkCol == null ? null : completedData.get(parent);
+        if (parentData == null || parentData.get("id") == null || parentData.get("name") == null) {
+            return fillRowsWithGapFill(table, llmCols, rows.size(), null);
+        }
+        List<Object> parentIds = parentData.get("id");
+        List<Object> parentNames = parentData.get("name");
+        if (parentIds.isEmpty() || parentIds.size() * 10 > rows.size()) {
+            return fillRowsWithGapFill(table, llmCols, rows.size(), null);   // 父表不够小 → 不分
+        }
+        Map<Object, String> nameOf = new HashMap<>();
+        for (int i = 0; i < parentIds.size() && i < parentNames.size(); i++) {
+            nameOf.put(parentIds.get(i), String.valueOf(parentNames.get(i)));
+        }
+
+        Map<String, List<Integer>> buckets = new LinkedHashMap<>();
+        for (int i = 0; i < rows.size(); i++) {
+            Object v = rows.get(i).values().get(fkCol);
+            buckets.computeIfAbsent(v == null ? "（未分类）" : nameOf.getOrDefault(v, String.valueOf(v)),
+                    k -> new ArrayList<>()).add(i);
+        }
+        List<Map<String, Object>> out = new ArrayList<>(rows.size());
+        for (int i = 0; i < rows.size(); i++) out.add(null);
+        for (Map.Entry<String, List<Integer>> e : buckets.entrySet()) {
+            List<Integer> idx = e.getValue();
+            String hint = "本批 " + table.name() + " 记录全部属于父分类「" + e.getKey()
+                    + "」，生成内容必须与该分类一致（名称、描述要像该分类下真实存在的商品，"
+                    + "不得跨品类）。";
+            List<Map<String, Object>> part = fillRowsWithGapFill(table, llmCols, idx.size(), hint);
+            for (int k = 0; k < idx.size() && k < part.size(); k++) {
+                out.set(idx.get(k), part.get(k));   // 按下标还原，行序不错位
+            }
+        }
+        log.info("表 `{}` 语义列按父表 `{}` 分 {} 组回填（父驱动生成）", table.name(), parent, buckets.size());
+        return out;
+    }
+
+    /**
      * 完整回填 + 补差（LLM 返回不足 → 补缺段；仍不足 → 抛异常，绝不静默接受缺口）。
      *
      * <p><b>必须分批</b>：本方法此前把整表行数一次性交给 LLM，与 source 表
@@ -644,8 +702,11 @@ public final class ContentGen {
      * <p>串行分批而非并发：本方法所在的表生成本身已是表级并发（Semaphore 限流），
      * 表内再叠加并发会把总并发推高到 maxConcurrency² 量级。</p>
      */
-    private List<Map<String, Object>> fillRowsWithGapFill(TableMeta table, List<ColumnDef> llmCols, int total) {
-        String ctx = tableConstraints(table.name());
+    private List<Map<String, Object>> fillRowsWithGapFill(TableMeta table, List<ColumnDef> llmCols,
+                                                          int total, String groupHint) {
+        String ctx = groupHint == null || groupHint.isBlank()
+                ? tableConstraints(table.name())
+                : mergePromptContext(groupHint, tableConstraints(table.name()));
         int batchSize = Math.max(1, Math.min(props.batchSize(), total));
         List<Map<String, Object>> all = new ArrayList<>(
                 fillBatched(table, llmCols, ctx, total, batchSize));
