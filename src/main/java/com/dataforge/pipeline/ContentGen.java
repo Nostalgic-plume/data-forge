@@ -634,61 +634,120 @@ public final class ContentGen {
     }
 
     /**
-     * 按父表分组回填语义列：让同一父行（如同一商品分类）下的记录共享一段带父类名的提示词，
-     * <b>实现父驱动的生成</b>——分类是 product 的父表，商品就该在分类之下生成。
+     * 按父表分组回填语义列——<b>父驱动的生成</b>：分类是 product 的父表，商品就该在分类之下
+     * 生成。像 sku 这种"隔代"表（直接父是 product、祖父才是 category），沿父链上溯找到
+     * "足够小的祖先"作分组依据。
      *
-     * <p>不这么做的话，整表共用一段 prompt、且分类是随机外键，两者永不相干：
-     * 1000 个商品会出同一种风格，而"华为手机归到家用电器"这类错配无法避免。</p>
+     * <p>不分组的话，整表共用一段 prompt、而外键是随机的，两者永不相干：商品名千篇一律，
+     * 价格与规格也不随品类变化。</p>
      *
-     * <p><b>判据保守</b>：只有父表行数明显小于本表（不足 1/10）才分组。否则像 orders(3000)
-     * 按 user(15000) 分会被切成大量碎片，每批过小、调用数暴涨，得不偿失。</p>
+     * <p><b>判据保守</b>：只有祖先表行数不足本表 1/10 才用它分组；最多上溯两层，找不到就
+     * 退回整表回填。否则像 orders(3000) 按 user(15000) 分会被切成大量碎片，每批过小、
+     * 调用数暴涨，得不偿失。</p>
      *
      * <p><b>行序必须严格对齐</b>：按原行下标收集分组结果再还原——{@code fillBatched} 的注释
      * 强调过，顺序错乱会把商品名配到别的商品上，比缺值更危险。</p>
      */
     private List<Map<String, Object>> fillByParentGroup(TableMeta table, List<ColumnDef> llmCols,
                                                         List<DataRow> rows) {
-        GenerationPlan.TablePlan tp = context.plan() == null ? null : context.plan().tablePlan(table.name());
-        String parent = tp == null ? null : tp.parent();
-        if (parent == null) return fillRowsWithGapFill(table, llmCols, rows.size(), null);
-
-        String fkCol = table.foreignKeys().stream()
-                .filter(fk -> parent.equals(fk.refTable()))
-                .map(com.dataforge.model.ForeignKeyDef::column).findFirst().orElse(null);
-        Map<String, List<Object>> parentData = fkCol == null ? null : completedData.get(parent);
-        if (parentData == null || parentData.get("id") == null || parentData.get("name") == null) {
+        String parent = parentOf(table.name());
+        String fkCol = parent == null ? null : fkTo(table.name(), parent);
+        if (parent == null || fkCol == null) {
             return fillRowsWithGapFill(table, llmCols, rows.size(), null);
         }
-        List<Object> parentIds = parentData.get("id");
-        List<Object> parentNames = parentData.get("name");
-        if (parentIds.isEmpty() || parentIds.size() * 10 > rows.size()) {
-            return fillRowsWithGapFill(table, llmCols, rows.size(), null);   // 父表不够小 → 不分
+        // ① 直接父表够小 → 按它分组（如 product 按 category）
+        if (smallEnough(parent, rows.size())) {
+            return bucketedFill(table, llmCols, rows, fkCol, idToName(parent), parent, null);
         }
-        Map<Object, String> nameOf = new HashMap<>();
-        for (int i = 0; i < parentIds.size() && i < parentNames.size(); i++) {
-            nameOf.put(parentIds.get(i), String.valueOf(parentNames.get(i)));
+        // ② 父表太大、祖父够小 → 按祖父分组（如 sku 按 category；经父表上溯一级）
+        String grand = parentOf(parent);
+        String upFk = grand == null ? null : fkTo(parent, grand);
+        if (grand != null && upFk != null && smallEnough(grand, rows.size())) {
+            Map<Object, Object> toGrand = idMap(parent, upFk);   // 父行 id → 祖先行 id
+            if (!toGrand.isEmpty()) {
+                return bucketedFill(table, llmCols, rows, fkCol, idToName(grand), grand, toGrand);
+            }
         }
+        return fillRowsWithGapFill(table, llmCols, rows.size(), null);
+    }
 
+    /**
+     * 按分组键分桶回填。{@code upMap} 非空时，先经它把本表外键值上溯到祖先行 id 再取名称；
+     * 结果按原行下标还原（不留 null）。
+     */
+    private List<Map<String, Object>> bucketedFill(TableMeta table, List<ColumnDef> llmCols,
+                                                   List<DataRow> rows, String fkCol,
+                                                   Map<Object, String> nameOf, String groupTable,
+                                                   Map<Object, Object> upMap) {
         Map<String, List<Integer>> buckets = new LinkedHashMap<>();
         for (int i = 0; i < rows.size(); i++) {
-            Object v = rows.get(i).values().get(fkCol);
-            buckets.computeIfAbsent(v == null ? "（未分类）" : nameOf.getOrDefault(v, String.valueOf(v)),
+            Object key = rows.get(i).values().get(fkCol);
+            if (upMap != null && key != null) key = upMap.get(key);
+            buckets.computeIfAbsent(key == null ? "（未分类）" : nameOf.getOrDefault(key, String.valueOf(key)),
                     k -> new ArrayList<>()).add(i);
         }
         List<Map<String, Object>> out = new ArrayList<>(rows.size());
         for (int i = 0; i < rows.size(); i++) out.add(null);
         for (Map.Entry<String, List<Integer>> e : buckets.entrySet()) {
             List<Integer> idx = e.getValue();
-            String hint = "本批 " + table.name() + " 记录全部属于父分类「" + e.getKey()
-                    + "」，生成内容必须与该分类一致（名称、描述要像该分类下真实存在的商品，"
-                    + "不得跨品类）。";
+            String hint = "本批 " + table.name() + " 记录全部属于分类「" + e.getKey()
+                    + "」，生成内容必须与该分类一致（名称、规格、价格都要像该分类下真实存在的"
+                    + "商品，不得跨品类）。";
             List<Map<String, Object>> part = fillRowsWithGapFill(table, llmCols, idx.size(), hint);
             for (int k = 0; k < idx.size() && k < part.size(); k++) {
                 out.set(idx.get(k), part.get(k));   // 按下标还原，行序不错位
             }
         }
-        log.info("表 `{}` 语义列按父表 `{}` 分 {} 组回填（父驱动生成）", table.name(), parent, buckets.size());
+        log.info("表 `{}` 语义列按 `{}` 分 {} 组回填（父驱动生成）", table.name(), groupTable, buckets.size());
         return out;
+    }
+
+    /** plan 里该表的父表名（无 plan 或无父表返回 null） */
+    private String parentOf(String tableName) {
+        GenerationPlan.TablePlan tp = context.plan() == null ? null : context.plan().tablePlan(tableName);
+        return tp == null ? null : tp.parent();
+    }
+
+    /** fromTable 指向 toTable 的外键列名（无则 null）——中间表也要能查，故走 context 的元数据 */
+    private String fkTo(String fromTable, String toTable) {
+        TableMeta meta = context.table(fromTable);
+        if (meta == null) return null;
+        return meta.foreignKeys().stream()
+                .filter(fk -> toTable.equals(fk.refTable()))
+                .map(com.dataforge.model.ForeignKeyDef::column).findFirst().orElse(null);
+    }
+
+    /** 该表是否"足够小"到可作分组依据：行数不足当前表 1/10 */
+    private boolean smallEnough(String tableName, int currentRows) {
+        Map<String, List<Object>> d = completedData.get(tableName);
+        List<Object> ids = d == null ? null : d.get("id");
+        return ids != null && !ids.isEmpty() && ids.size() * 10 <= currentRows;
+    }
+
+    /** 该表的 行id → name 映射（无 name 列则空） */
+    private Map<Object, String> idToName(String tableName) {
+        Map<String, List<Object>> d = completedData.get(tableName);
+        if (d == null || d.get("id") == null || d.get("name") == null) return Map.of();
+        Map<Object, String> m = new HashMap<>();
+        List<Object> ids = d.get("id");
+        List<Object> names = d.get("name");
+        for (int i = 0; i < ids.size() && i < names.size(); i++) {
+            m.put(ids.get(i), String.valueOf(names.get(i)));
+        }
+        return m;
+    }
+
+    /** 该表 行id → 指定列值 的映射（沿父链上溯用） */
+    private Map<Object, Object> idMap(String tableName, String column) {
+        Map<String, List<Object>> d = completedData.get(tableName);
+        if (d == null || d.get("id") == null || d.get(column) == null) return Map.of();
+        Map<Object, Object> m = new HashMap<>();
+        List<Object> ids = d.get("id");
+        List<Object> vals = d.get(column);
+        for (int i = 0; i < ids.size() && i < vals.size(); i++) {
+            if (vals.get(i) != null) m.put(ids.get(i), vals.get(i));
+        }
+        return m;
     }
 
     /**
