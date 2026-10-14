@@ -148,6 +148,7 @@ public class GenericExpander {
             case "unique" -> seqValue(cp, index, seqStart);
             case "faker" -> fakerValue(cp, table, rng);
             case "valueRange" -> valueRangeValue(cp, rng, rowValues);
+            case "byAncestor" -> byAncestorValue(cp, table, context, completedData, rowValues, rng);
             case "const" -> cp.param("value");
             case "llm" -> null;   // 语义列（商品名/规格等）：ContentGen 展开后 LLM 批量回填
             default -> null;
@@ -505,6 +506,113 @@ public class GenericExpander {
         double lo = min != null ? min : 0;
         double hi = max != null ? max : 100000;
         return Math.round((lo + rng.nextDouble() * (hi - lo)) * 100.0) / 100.0;
+    }
+
+    /**
+     * 祖先列派生（{@code params.keyTable} / {@code specFile}）：沿 plan 的 parent 链上溯到
+     * keyTable，取该祖先行的 {@code name} 作键，查规格模板，各维度随机取值拼成 JSON。
+     *
+     * <p>解决"隔代依赖"：sku 的规格该由祖父 category 决定，而展开阶段手上只有外键。
+     * 逐级借 completedData 把本表外键值换算成祖先行 id（本表 fk → 父行 id → 祖父行 id）。</p>
+     *
+     * <p>任一步断链（无 plan / 无外键 / 祖先无该行 / 模板无该类）→ 返回 null，
+     * 由列的可空性兜住：不臆造，也不抛——规格列允许为空。</p>
+     */
+    private Object byAncestorValue(GenerationPlan.ColumnPlan cp, TableMeta table,
+                                   PipelineContext context,
+                                   Map<String, Map<String, List<Object>>> completedData,
+                                   Map<String, Object> rowValues, Random rng) {
+        String keyTable = cp.param("keyTable");
+        if (keyTable == null || keyTable.isBlank()) return null;
+        Map<String, Map<String, List<String>>> specs = SpecTemplates.load(cp.param("specFile"));
+        if (specs.isEmpty()) return null;
+
+        // 本表 → 父 → 祖父（最多两级，覆盖 sku→product→category 这类隔代依赖）
+        String parent = parentOf(context, table.name());
+        String fk1 = parent == null ? null : fkColumn(context, table.name(), parent);
+        if (fk1 == null || rowValues == null) return null;
+        Object parentId = rowValues.get(fk1);
+        if (parentId == null) return null;
+
+        Object keyRowId;
+        if (parent.equals(keyTable)) {
+            keyRowId = parentId;                      // 一级即可（如 product 按 category）
+        } else {
+            String grand = parentOf(context, parent);
+            String fk2 = grand == null ? null : fkColumn(context, parent, grand);
+            if (fk2 == null || !grand.equals(keyTable)) return null;
+            Map<String, List<Object>> pd = completedData.get(parent);
+            if (pd == null || pd.get("id") == null || pd.get(fk2) == null) return null;
+            int idx = indexOf(pd.get("id"), parentId);
+            if (idx < 0 || idx >= pd.get(fk2).size()) return null;
+            keyRowId = pd.get(fk2).get(idx);          // 父行 id → 祖先行 id
+        }
+
+        Map<String, List<Object>> kd = completedData.get(keyTable);
+        if (kd == null || kd.get("id") == null || kd.get("name") == null) return null;
+        int k = indexOf(kd.get("id"), keyRowId);
+        if (k < 0) return null;
+        String label = String.valueOf(kd.get("name").get(k));
+        Map<String, List<String>> dims = matchTemplate(specs, label);
+        if (dims == null) return null;                // 该分类没有模板 → 落空，不臆造
+
+        StringBuilder sb = new StringBuilder("{");
+        boolean first = true;
+        for (Map.Entry<String, List<String>> e : dims.entrySet()) {
+            List<String> pool = e.getValue();
+            if (pool.isEmpty()) continue;
+            if (!first) sb.append(',');
+            sb.append('"').append(e.getKey()).append("\":\"")
+                    .append(pool.get(rng.nextInt(pool.size()))).append('"');
+            first = false;
+        }
+        return sb.append('}').toString();
+    }
+
+    /**
+     * 模板匹配：先精确命中；否则退化为"分类名包含模板键"。
+     *
+     * <p>必须退化，因为 {@code category.name} 是 LLM 生成的（"智能手机""女装连衣裙"），
+     * 而配置里写的是通用品类词（"手机""女装"）——两者不可能精确相等。
+     * 都不中则返回 null：该分类没有模板，落空而不臆造。</p>
+     */
+    private static Map<String, List<String>> matchTemplate(
+            Map<String, Map<String, List<String>>> specs, String label) {
+        Map<String, List<String>> exact = specs.get(label);
+        if (exact != null) return exact;
+        Map<String, List<String>> best = null;
+        int bestLen = 0;
+        for (Map.Entry<String, Map<String, List<String>>> e : specs.entrySet()) {
+            // 取"匹配上的最长键"，避免"手机数码"被更短的"手机"抢先
+            if (label.contains(e.getKey()) && e.getKey().length() > bestLen) {
+                best = e.getValue();
+                bestLen = e.getKey().length();
+            }
+        }
+        return best;
+    }
+
+    /** plan 里该表的父表名（无 plan / 无父表返回 null） */
+    private static String parentOf(PipelineContext context, String tableName) {
+        GenerationPlan.TablePlan tp = context.plan() == null ? null : context.plan().tablePlan(tableName);
+        return tp == null ? null : tp.parent();
+    }
+
+    /** fromTable 指向 toTable 的外键列名（中间表也要能查，故走运行时元数据） */
+    private static String fkColumn(PipelineContext context, String fromTable, String toTable) {
+        TableMeta meta = context.table(fromTable);
+        if (meta == null) return null;
+        return meta.foreignKeys().stream()
+                .filter(fk -> toTable.equals(fk.refTable()))
+                .map(ForeignKeyDef::column).findFirst().orElse(null);
+    }
+
+    private static int indexOf(List<Object> values, Object target) {
+        if (values == null) return -1;
+        for (int i = 0; i < values.size(); i++) {
+            if (target.equals(values.get(i))) return i;
+        }
+        return -1;
     }
 
     /**

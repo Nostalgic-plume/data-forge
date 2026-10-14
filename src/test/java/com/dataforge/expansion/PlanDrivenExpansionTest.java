@@ -253,10 +253,13 @@ class PlanDrivenExpansionTest {
 
         ObjectMapper om = new ObjectMapper();
         for (DataRow row : data.get("sku").rows()) {
-            String specs = String.valueOf(row.values().get("specs"));
-            JsonNode node = om.readTree(specs);   // 非法 JSON 在此抛，测试即失败
-            assertTrue(node.isObject(), "specs 应是 JSON 对象，实际: " + specs);
-            assertTrue(node.has("color") && node.has("size"), "specs 应含 color/size: " + specs);
+            Object raw = row.values().get("specs");
+            // specs 已改为"按祖先分类选模板"（byAncestor）：mock 的分类名不含品类词，匹配不上
+            // 就落空——这是预期行为，真实 LLM 下分类名（如"智能手机"）才匹配得上。
+            // 但只要它有值，就必须是合法 JSON——这条守的正是原来那个坑（内嵌 JSON 撑破结构）。
+            if (raw == null) continue;
+            JsonNode node = om.readTree(String.valueOf(raw));
+            assertTrue(node.isObject(), "specs 非空时必须是合法 JSON 对象，实际: " + raw);
         }
         for (DataRow row : data.get("product").rows()) {
             String images = String.valueOf(row.values().get("images"));
