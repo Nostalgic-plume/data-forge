@@ -151,8 +151,8 @@ class PlanDrivenExpansionTest {
         Map<String, GeneratedData> data = generate(realPlan(),
                 Map.of("category", 6, "product", 120), mock);
 
-        assertTrue(mock.seenContexts().stream().anyMatch(c -> c.contains("父分类")),
-                "分组回填应把父分类上下文给到 LLM，实际收到 " + mock.seenContexts().size() + " 条提示词");
+        assertTrue(mock.seenContexts().stream().anyMatch(c -> c.contains("属于分类")),
+                "分组回填应把分类上下文给到 LLM，实际收到 " + mock.seenContexts().size() + " 条提示词");
         assertEquals(120, data.get("product").rowCount(), "分组不应影响行数");
     }
 
