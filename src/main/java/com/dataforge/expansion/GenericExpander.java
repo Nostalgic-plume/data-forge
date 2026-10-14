@@ -583,13 +583,16 @@ public class GenericExpander {
         Map<String, List<String>> best = null;
         int bestLen = 0;
         for (Map.Entry<String, Map<String, List<String>>> e : specs.entrySet()) {
+            if ("默认".equals(e.getKey())) continue;   // 兜底键只作最后退路，不参与包含匹配
             // 取"匹配上的最长键"，避免"手机数码"被更短的"手机"抢先
             if (label.contains(e.getKey()) && e.getKey().length() > bestLen) {
                 best = e.getValue();
                 bestLen = e.getKey().length();
             }
         }
-        return best;
+        // 分类名由 LLM 生成、无法穷举（实测出现过"电脑办公"这种没有对应键的），
+        // 故必须有兜底：否则整个分类的规格会静默落空。
+        return best != null ? best : specs.get("默认");
     }
 
     /** plan 里该表的父表名（无 plan / 无父表返回 null） */
