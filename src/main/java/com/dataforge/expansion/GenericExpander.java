@@ -147,7 +147,7 @@ public class GenericExpander {
             case "date" -> dateValue(cp, rng, rowCtx);
             case "unique" -> seqValue(cp, index, seqStart);
             case "faker" -> fakerValue(cp, table, rng);
-            case "valueRange" -> valueRangeValue(cp, rng);
+            case "valueRange" -> valueRangeValue(cp, rng, rowValues);
             case "const" -> cp.param("value");
             case "llm" -> null;   // 语义列（商品名/规格等）：ContentGen 展开后 LLM 批量回填
             default -> null;
@@ -491,13 +491,38 @@ public class GenericExpander {
     }
 
     /** 取值范围（RuleSetters VALUE_RANGE）：纯数字 min/max 区间随机；表达式（含字母）回退 null 留白 */
-    private Object valueRangeValue(GenerationPlan.ColumnPlan cp, Random rng) {
-        Double min = parseNumber(cp.param("min"));
-        Double max = parseNumber(cp.param("max"));
+    /**
+     * 取值范围（RuleSetters VALUE_RANGE）：{@code params.min/max} 既可以是数字字面量，
+     * 也可以是<b>同行已生成列的列名</b>（如 {@code min="price"} 表示"不低于售价"）。
+     *
+     * <p><b>修的是一个静默失效</b>：此前只认字面量，{@code min="price"} 被 parseDouble 判非法后
+     * <b>兜底成 0</b>，于是"原价 ≥ 售价"彻底落空、产出原价可能低于售价的数据，全程没有任何提示。</p>
+     */
+    private Object valueRangeValue(GenerationPlan.ColumnPlan cp, Random rng, Map<String, Object> rowValues) {
+        Double min = resolveBound(cp.param("min"), rowValues, cp.column());
+        Double max = resolveBound(cp.param("max"), rowValues, cp.column());
         if (min == null && max == null) return null;
         double lo = min != null ? min : 0;
         double hi = max != null ? max : 100000;
         return Math.round((lo + rng.nextDouble() * (hi - lo)) * 100.0) / 100.0;
+    }
+
+    /**
+     * 边界解析：数字字面量直接取；否则按"同行已生成列"取该行的值。
+     * 两者都不成立 → 抛异常——不静默兜底，那正是这条配置曾经失效的方式。
+     */
+    private static Double resolveBound(String raw, Map<String, Object> rowValues, String column) {
+        if (raw == null || raw.isBlank()) return null;
+        String s = raw.trim();
+        try {
+            return Double.parseDouble(s);
+        } catch (NumberFormatException ignored) {
+            // 不是数字 → 按同行列名解析
+        }
+        Object v = rowValues == null ? null : rowValues.get(s);
+        if (v instanceof Number n) return n.doubleValue();
+        throw new IllegalStateException("列 `" + column + "` 的 valueRange 边界 `" + raw
+                + "` 既不是数字，也不是同行已生成的数值列");
     }
 
     /** 序号起始（增量续号）：从现有最大序号 +1（追加不冲突） */
