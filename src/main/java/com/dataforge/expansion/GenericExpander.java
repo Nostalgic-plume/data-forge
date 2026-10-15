@@ -74,9 +74,9 @@ public class GenericExpander {
         for (int i = 0; i < target; i++) {
             RowCtx rowCtx = rowContexts.get(i);
             Map<String, Object> values = new LinkedHashMap<>();
-            // ① 非 expr 计划列先生成（expr 与携带列延后，保证可引用同表已算出的列，§H8 列序）
+            // ① 非 expr 计划列先生成（expr / rootRef / 携带列延后，保证可引用同表已算出的列，§H8 列序）
             for (GenerationPlan.ColumnPlan cp : plan.columns()) {
-                if ("expr".equals(cp.mode()) || isCarriedFk(cp)) continue;
+                if ("expr".equals(cp.mode()) || "rootRef".equals(cp.mode()) || isCarriedFk(cp)) continue;
                 values.put(cp.column(), generateValue(cp, table, context, completedData,
                         i, seqStart, rng, uniqueFk, rowCtx, values));
             }
@@ -87,10 +87,13 @@ public class GenericExpander {
                 values.put(cp.column(), generateValue(cp, table, context, completedData,
                         i, seqStart, rng, uniqueFk, rowCtx, values));
             }
-            // ② expr 表达式列：引用仅限 ①/①′ 已生成的计划列（validateExprColumns 预检保证）
+            // ② 引用同行已算列的派生列（expr 表达式 / rootRef 祖先引用）：引用仅限 ①/①′ 已生成的计划列
             for (GenerationPlan.ColumnPlan cp : plan.columns()) {
-                if (!"expr".equals(cp.mode())) continue;
-                values.put(cp.column(), exprValue(cp, values, table));
+                if ("expr".equals(cp.mode())) {
+                    values.put(cp.column(), exprValue(cp, values, table));
+                } else if ("rootRef".equals(cp.mode())) {
+                    values.put(cp.column(), rootRefValue(cp, table, context, completedData, values));
+                }
             }
             // 默认列填充：plan 未覆盖的列（避免 NOT NULL 列 null 导致落库失败）
             for (ColumnDef col : table.columns()) {
@@ -150,6 +153,7 @@ public class GenericExpander {
             case "valueRange" -> valueRangeValue(cp, rng, rowValues);
             case "byAncestor" -> byAncestorValue(cp, table, context, completedData, rowValues, rng);
             case "const" -> cp.param("value");
+            case "rootRef" -> null;  // 祖先引用：须等同行外键算完，在 ② 派生（不走本分支）
             case "llm" -> null;   // 语义列（商品名/规格等）：ContentGen 展开后 LLM 批量回填
             default -> null;
         };
@@ -242,11 +246,36 @@ public class GenericExpander {
         }
         List<Object> pool = parent.get(refColumn);
         if (pool == null || pool.isEmpty()) return null;
+        // refLeaf：只在叶子里取（如"商品的分类须是二级分类"——含父节点的话商品会挂到一级类目上）
+        if ("true".equals(cp.param("refLeaf"))) {
+            pool = leafOnly(pool, parent, cp.param("refParentColumn"));
+            if (pool.isEmpty()) return null;
+        }
         // 幂律长尾（修 D6）：少数父值被引用多、多数少——订单在用户间呈长尾分布
         if ("true".equals(cp.param("zipf"))) {
             return pool.get(Zipf.zipfPick(pool.size(), rng));
         }
         return pool.get(rng.nextInt(pool.size()));
+    }
+
+    /**
+     * 只保留叶子行（没有任何行以它为父）的 id。
+     *
+     * <p>用途：把引用池从"整棵树"收窄到"叶子层"。分类表是自引用树，若不加限制，
+     * 商品会挂到一级类目上——而 DDL 明写 {@code category_id} 是"所属二级分类"。</p>
+     *
+     * <p>父列缺失（被引表不是树）→ 原样返回：没有树就别乱过滤。</p>
+     */
+    private static List<Object> leafOnly(List<Object> ids, Map<String, List<Object>> refTable,
+                                         String parentColumn) {
+        String col = (parentColumn == null || parentColumn.isBlank()) ? "parent_id" : parentColumn;
+        List<Object> parents = refTable.get(col);
+        if (parents == null) return ids;
+        Set<Object> hasChild = new HashSet<>();
+        for (Object p : parents) {
+            if (p != null) hasChild.add(p);
+        }
+        return ids.stream().filter(id -> !hasChild.contains(id)).toList();
     }
 
     /** 是否为携带列 fk（params.follow 指向同行锚定列）：生成顺序上必须排在锚定列之后 */
@@ -355,6 +384,12 @@ public class GenericExpander {
         List<RowCtx> contexts = new ArrayList<>(target);
         String parentTable = plan.parent();
         List<Object> parentIds = parentTable == null ? null : parentPool(parentTable, completedData);
+        // 分组父池同样要收窄到叶子：product 的 category_id 直接取自 rowCtx.parentId()，
+        // 只过滤 fkValue 的随机池不够——分组路径会绕开它，商品照样挂到一级类目上。
+        Map<String, List<Object>> parentCols = parentTable == null ? null : completedData.get(parentTable);
+        if (parentIds != null && parentCols != null && wantsLeafParent(plan, parentTable)) {
+            parentIds = leafOnly(parentIds, parentCols, null);
+        }
         if (parentIds == null || parentIds.isEmpty()) {
             for (int i = 0; i < target; i++) contexts.add(RowCtx.none());
             return contexts;
@@ -616,6 +651,64 @@ public class GenericExpander {
             if (target.equals(values.get(i))) return i;
         }
         return -1;
+    }
+
+    /**
+     * 祖先引用（{@code params.refTable}）：取同行指向 refTable 的外键值，沿该表的自引用父列
+     * 一路爬到根，返回根的 id。
+     *
+     * <p>用于"从既有引用派生出的冗余列"——如 {@code product.first_category_id}（一级分类）。
+     * 它完全可以由 {@code category_id} 推出来，但表里刻意存了一份：前端按一级类目筛选商品时
+     * 一次查询搞定，不必每次递归爬树。存冗余就要维护一致性，本模式就是那个维护动作。</p>
+     *
+     * <p><b>循环条件写成"没有父为止"，而非"取一层父"</b>：层级数不进代码，将来分类加到三级、
+     * 四级，本方法一行不用改；写死取一层的话，加层级时就得回来改引擎。</p>
+     *
+     * <p>任一步断链（无 refTable / 找不到外键列 / 被引表不在已完成集 / 父列缺失）→ 返回原值或 null，
+     * 不抛：本列是可空冗余列，取不到就留空，由校验兜。</p>
+     */
+    private Object rootRefValue(GenerationPlan.ColumnPlan cp, TableMeta table, PipelineContext context,
+                                Map<String, Map<String, List<Object>>> completedData,
+                                Map<String, Object> rowValues) {
+        String refTable = cp.param("refTable");
+        if (refTable == null || refTable.isBlank() || rowValues == null) return null;
+        String fkCol = cp.param("refColumn");
+        if (fkCol == null || fkCol.isBlank()) fkCol = fkColumn(context, table.name(), refTable);
+        if (fkCol == null) return null;
+        Object cur = rowValues.get(fkCol);
+        if (cur == null) return null;
+
+        Map<String, List<Object>> tree = completedData.get(refTable);
+        if (tree == null) return null;
+        List<Object> ids = tree.get("id");
+        String parentCol = cp.param("parentColumn");
+        if (parentCol == null || parentCol.isBlank()) parentCol = "parent_id";
+        List<Object> parents = tree.get(parentCol);
+        if (ids == null || parents == null) return cur;   // 被引表不是树 → 自身即根
+
+        Object root = cur;
+        // 上限只是环保护（配置写错成环时不至于转死），正常树深远小于此，不构成"层级数写死"
+        for (int hop = 0; hop < 32; hop++) {
+            int idx = indexOf(ids, root);
+            if (idx < 0 || idx >= parents.size()) break;
+            Object p = parents.get(idx);
+            if (p == null || isRootSentinel(p)) break;
+            root = p;
+        }
+        return root;
+    }
+
+    /** 顶级哨兵：DDL 约定父列为 0 表示"无父"（如 category.parent_id 注释"0为顶级"） */
+    private static boolean isRootSentinel(Object parent) {
+        return parent instanceof Number n && n.longValue() == 0L;
+    }
+
+    /** plan 中指向 parentTable 的 fk 列是否声明了 refLeaf（要收窄到叶子层） */
+    private static boolean wantsLeafParent(GenerationPlan.TablePlan plan, String parentTable) {
+        if (plan == null || parentTable == null) return false;
+        return plan.columns().stream().anyMatch(c -> "fk".equals(c.mode())
+                && parentTable.equals(c.param("ref_table"))
+                && "true".equals(c.param("refLeaf")));
     }
 
     /**
