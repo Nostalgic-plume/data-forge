@@ -29,6 +29,7 @@ import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.Deque;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -38,6 +39,7 @@ import java.util.stream.Collectors;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assumptions.assumeTrue;
@@ -148,16 +150,16 @@ class PlanDrivenExpansionTest {
         // 分类是 product 的父表：商品必须在分类之下生成。触发分组后每组带上"本批记录全部属于
         // 父分类 X"的提示词（否则整表一段 prompt，风格单一且与分类无关）。
         //
-        // 注意行数下限：分组受 smallEnough 约束——父表行数必须 ≤ 本表 1/10。分类现在是固定的
-        // 30 个节点（不随请求变化），故 product 至少要 300 行才会分组；这里取 320 留余量。
-        // 这条耦合是真实约束而非测试噪声：product 少于 300 行时分组会被静默跳过（ContentGen 有 warn）。
+        // 注意行数下限：分组受 smallEnough 约束——父表行数必须 ≤ 本表 1/4。分类是固定的 30 个
+        // 节点（不随请求变化），故 product 至少 120 行才会分组；这里取 160 留余量。
+        // 这条耦合是真实约束而非测试噪声：行数不够时分组会被跳过（ContentGen 有 warn 留痕）。
         MockLlmClient mock = new MockLlmClient();
         Map<String, GeneratedData> data = generate(realPlan(),
-                Map.of("category", 30, "product", 320), mock);
+                Map.of("category", 30, "product", 160), mock);
 
         assertTrue(mock.seenContexts().stream().anyMatch(c -> c.contains("属于分类")),
                 "分组回填应把分类上下文给到 LLM，实际收到 " + mock.seenContexts().size() + " 条提示词");
-        assertEquals(320, data.get("product").rowCount(), "分组不应影响行数");
+        assertEquals(160, data.get("product").rowCount(), "分组不应影响行数");
     }
 
     @Test
@@ -293,6 +295,51 @@ class PlanDrivenExpansionTest {
         assertEquals(8, roots, "一级类目应为 8 个（parent_id=0）");
         assertEquals(30, roots + children, "每个分类非根即子，不应有第三态");
         assertTrue(children > 0, "应存在二级类目");
+    }
+
+    @Test
+    void 商品的分类须是叶子类目_一级分类列由分类ID上溯得到() throws Exception {
+        // DDL 明写：category_id 是"分类ID（所属二级分类）"、first_category_id 是"一级分类ID"。
+        // 原配置前者在整棵树上取样（商品会挂到一级类目），后者写死 const 0（根本没有 id=0 的类目）——
+        // 前者让商品分类的层级错乱，后者让"按一级类目筛选商品"整列失效。两处都不报错。
+        Map<String, GeneratedData> data = generate(realPlan(),
+                Map.of("category", 30, "product", 160));
+
+        Map<Object, String> nameById = new LinkedHashMap<>();
+        Map<Object, Object> parentById = new LinkedHashMap<>();
+        Set<Object> hasChild = new HashSet<>();
+        for (DataRow row : data.get("category").rows()) {
+            Object id = row.values().get("id");
+            Object pid = row.values().get("parent_id");
+            nameById.put(id, String.valueOf(row.values().get("name")));
+            parentById.put(id, pid);
+            if (pid != null && ((Number) pid).longValue() != 0) hasChild.add(pid);
+        }
+
+        Set<Object> used = new LinkedHashSet<>();
+        for (DataRow row : data.get("product").rows()) {
+            Object catId = row.values().get("category_id");
+            assertTrue(nameById.containsKey(catId), "category_id 应指向已生成的分类，实际 " + catId);
+            assertFalse(hasChild.contains(catId), "category_id 必须是叶子类目（二级分类），"
+                    + "却指向了有下级的一级类目「" + nameById.get(catId) + "」");
+            used.add(catId);
+
+            Object first = row.values().get("first_category_id");
+            assertNotNull(first, "first_category_id 不该留空");
+            long firstId = ((Number) first).longValue();
+            assertNotEquals(0L, firstId, "不存在 id=0 的类目，该列写 0 就是无效值（原配置 const 0 即此错）");
+
+            // 一级分类 = 沿 product.category_id 爬到根（循环条件"没有父为止"，不写死层级数）
+            Object cur = catId;
+            for (int hop = 0; hop < 16; hop++) {
+                Object p = parentById.get(cur);
+                if (p == null || ((Number) p).longValue() == 0) break;
+                cur = p;
+            }
+            assertEquals(((Number) cur).longValue(), firstId,
+                    "first_category_id 应是 category_id 所在分支的根，分类「" + nameById.get(catId) + "」");
+        }
+        assertTrue(used.size() > 1, "应覆盖多个分类，实际 " + used.size() + " 个");
     }
 
     @Test

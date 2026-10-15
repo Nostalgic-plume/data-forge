@@ -722,11 +722,21 @@ public final class ContentGen {
                 .map(com.dataforge.model.ForeignKeyDef::column).findFirst().orElse(null);
     }
 
-    /** 该表是否"足够小"到可作分组依据：行数不足当前表 1/10 */
+    /**
+     * 该表是否"足够小"到可作分组依据：行数不足当前表 1/4（即平均每组至少 4 行）。
+     *
+     * <p>阈值原是 1/10，在"父表是随机垃圾名"的年代够用——那时分组只是锦上添花。
+     * 分类改成真实的 30 节点固定树之后，1/10 要求 product ≥300 行才分组，正常规模下
+     * 直接退化成"整表一段 prompt"，商品与分类的对应关系被悄悄丢掉（且原先完全无声）。
+     * 放到 1/4 后，30 个分类下 product ≥120 行即分组。</p>
+     *
+     * <p>下限不能去掉：分组意味着每个桶一次 LLM 调用，桶里只剩 1 行时就成了"逐行调用"，
+     * 比整表批量贵一个数量级——省下的调用数买不回丢掉的质量，但也不能反过来不计成本。</p>
+     */
     private boolean smallEnough(String tableName, int currentRows) {
         Map<String, List<Object>> d = completedData.get(tableName);
         List<Object> ids = d == null ? null : d.get("id");
-        return ids != null && !ids.isEmpty() && ids.size() * 10 <= currentRows;
+        return ids != null && !ids.isEmpty() && ids.size() * 4 <= currentRows;
     }
 
     /** 该表的 行id → name 映射（无 name 列则空） */
