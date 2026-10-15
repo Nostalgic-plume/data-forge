@@ -48,7 +48,7 @@ public class ExpansionEngine {
     /** 是否为固定样本表 */
     public boolean isFixed(GenerationPlan plan, String tableName) {
         GenerationPlan.TablePlan tp = nonNull(plan).tablePlan(tableName);
-        if (tp != null) return "fixed".equals(tp.builder());
+        if (tp != null) return tp.isFixed();
         return FixedSamples.isFixed(tableName);
     }
 

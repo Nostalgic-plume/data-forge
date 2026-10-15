@@ -145,15 +145,19 @@ class PlanDrivenExpansionTest {
 
     @Test
     void 语义列按父表分组_父分类上下文喂给LLM() throws Exception {
-        // 分类是 product 的父表：商品必须在分类之下生成。父表 6 行远小于本表 120 行时触发分组，
-        // 每组带上"本批记录全部属于父分类 X"的提示词（否则整表一段 prompt，风格单一且与分类无关）。
+        // 分类是 product 的父表：商品必须在分类之下生成。触发分组后每组带上"本批记录全部属于
+        // 父分类 X"的提示词（否则整表一段 prompt，风格单一且与分类无关）。
+        //
+        // 注意行数下限：分组受 smallEnough 约束——父表行数必须 ≤ 本表 1/10。分类现在是固定的
+        // 30 个节点（不随请求变化），故 product 至少要 300 行才会分组；这里取 320 留余量。
+        // 这条耦合是真实约束而非测试噪声：product 少于 300 行时分组会被静默跳过（ContentGen 有 warn）。
         MockLlmClient mock = new MockLlmClient();
         Map<String, GeneratedData> data = generate(realPlan(),
-                Map.of("category", 6, "product", 120), mock);
+                Map.of("category", 30, "product", 320), mock);
 
         assertTrue(mock.seenContexts().stream().anyMatch(c -> c.contains("属于分类")),
                 "分组回填应把分类上下文给到 LLM，实际收到 " + mock.seenContexts().size() + " 条提示词");
-        assertEquals(120, data.get("product").rowCount(), "分组不应影响行数");
+        assertEquals(320, data.get("product").rowCount(), "分组不应影响行数");
     }
 
     @Test
@@ -242,6 +246,53 @@ class PlanDrivenExpansionTest {
         assertEquals(0, summary.fkOrphanCount(),
                 "全表生成后任何 FK 都不应悬挂（隐含：拓扑排序与父池引用整体正确）");
         assertEquals(0, summary.uniqueConflictCount(), "唯一键不应冲突");
+    }
+
+    @Test
+    void 固定分类树_名称唯一且父子关系自洽() throws Exception {
+        // 分类原先在 plan 里被拆成"每列各自随机"，同时踩了三个坑：
+        //   ① name 走 pool → 独立抽样，30 个名池出 30 行必然重名；
+        //   ② parent_id 走 valueRange 0~6 → "水果"可能挂到"家用电器"下，二级类目还可能浮到顶层；
+        //   ③ status 写死 1 → 而 DDL 注释里 1 是"隐藏"，整库类目前端一个都看不见。
+        // 三者都不报错（parent_id 非 FK、name 无 UNIQUE），是静默错。改为按 category-tree.json
+        // 整表打表后，这三条不变量必须同时成立。
+        Map<String, GeneratedData> data = generate(realPlan(), Map.of("category", 30));
+
+        GeneratedData category = data.get("category");
+        assertNotNull(category, "应生成 category");
+        assertEquals(30, category.rowCount(), "分类树固定 30 个节点，行数不随请求变化");
+
+        Map<Object, String> nameById = new LinkedHashMap<>();
+        Set<String> names = new LinkedHashSet<>();
+        Map<Object, Object> parentById = new LinkedHashMap<>();
+        for (DataRow row : category.rows()) {
+            Object id = row.values().get("id");
+            String name = String.valueOf(row.values().get("name"));
+            assertTrue(names.add(name), "分类名必须唯一，重复: " + name);
+            assertEquals(0, ((Number) row.values().get("status")).intValue(),
+                    "status=1 在 DDL 里是『隐藏』，分类不该整库隐藏");
+            nameById.put(id, name);
+            parentById.put(id, row.values().get("parent_id"));
+        }
+
+        int roots = 0;
+        int children = 0;
+        for (Map.Entry<Object, Object> e : parentById.entrySet()) {
+            long childId = ((Number) e.getKey()).longValue();
+            long parentId = ((Number) e.getValue()).longValue();
+            if (parentId == 0L) {
+                roots++;
+                continue;
+            }
+            assertTrue(nameById.containsKey(parentId),
+                    "parent_id=" + parentId + " 应指向已生成的分类行，不得悬挂");
+            assertTrue(parentId < childId,
+                    "父分类应排在子分类之前（树按拓扑序打表）：子 id=" + childId + " 父 id=" + parentId);
+            children++;
+        }
+        assertEquals(8, roots, "一级类目应为 8 个（parent_id=0）");
+        assertEquals(30, roots + children, "每个分类非根即子，不应有第三态");
+        assertTrue(children > 0, "应存在二级类目");
     }
 
     @Test

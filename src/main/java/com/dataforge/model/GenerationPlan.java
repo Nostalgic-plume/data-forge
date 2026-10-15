@@ -48,6 +48,12 @@ public record GenerationPlan(
         public boolean isDerived() {
             return "derived".equals(builder);
         }
+
+        /** 固定种子表：值与 id 由内置样本/本地数据文件打表，零 LLM 零随机（如 role/admin/category） */
+        @com.fasterxml.jackson.annotation.JsonIgnore
+        public boolean isFixed() {
+            return "fixed".equals(builder);
+        }
     }
 
     /**

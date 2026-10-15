@@ -1,6 +1,7 @@
 package com.dataforge.pipeline;
 
 import com.dataforge.model.ColumnDef;
+import com.dataforge.model.GenerationPlan;
 import com.dataforge.model.TableMeta;
 import com.dataforge.model.PipelineContext;
 import org.slf4j.Logger;
@@ -26,11 +27,11 @@ public final class PkGen {
 
     private PkGen() {}
 
-    /** 为所有表生成 PK 骨架（确定性：SEQUENTIAL 严格可复现）。固定表（role/admin）跳过——行自带固定 id。 */
+    /** 为所有表生成 PK 骨架（确定性：SEQUENTIAL 严格可复现）。固定表（role/admin/category）跳过——行自带固定 id。 */
     public static void execute(PipelineContext context, Strategy strategy) {
         for (TableMeta table : context.tables()) {
             String name = table.name();
-            if (com.dataforge.expansion.FixedSamples.isFixed(name)) {
+            if (isFixedTable(context, name)) {
                 // 固定表：骨架用 FixedSamples 固定 id 池（FkAlloc 引用需与固定行 id 一致，
                 // 通用化后固定表也可能被分析判为 source 走 LLM 分支，仍须有 id 骨架）
                 generateFixedPkSkeleton(table, context);
@@ -52,6 +53,18 @@ public final class PkGen {
             log.info("PK 骨架: `{}` → {} 行, 策略={}, 起始ID={}, PK列={}",
                     name, count, strategy, startId, pkMap.keySet());
         }
+    }
+
+    /**
+     * 该表是否按固定表处理：<b>有计划以 plan 裁决</b>（builder=fixed），无计划才回落名字硬编码。
+     *
+     * <p>必须与 {@code ContentGen} 同口径（两处都走 {@code TablePlan.isFixed()}）：若一处判固定、
+     * 另一处不判，就会"骨架按固定 id 池、行却按请求行数生成"，外键池与实体行整体错位。</p>
+     */
+    private static boolean isFixedTable(PipelineContext context, String tableName) {
+        GenerationPlan.TablePlan tp = context.plan() == null
+                ? null : context.plan().tablePlan(tableName);
+        return tp != null ? tp.isFixed() : com.dataforge.expansion.FixedSamples.isFixed(tableName);
     }
 
     /** 固定表骨架：用 FixedSamples 固定行的 id 池（FkAlloc 引用需与固定行 id 一致） */
