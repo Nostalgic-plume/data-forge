@@ -34,10 +34,22 @@ public final class FixedSamples {
         return "role".equals(tableName) || "admin".equals(tableName);
     }
 
-    /** 生成固定表行（值按列名匹配，缺列补 null——NOT NULL 列必须全覆盖） */
+    /**
+     * 生成固定表行（值按列名匹配，缺列补 null——NOT NULL 列必须全覆盖）。
+     *
+     * <p>category 委托给 {@link CategoryTree}：与 role/admin 不同，它的值不在 Java 里硬编码，
+     * 而由本地文件 {@code category-tree.json} 驱动（分类名是业务数据、会变，不该编进代码）。</p>
+     *
+     * <p><b>为什么 category 不出现在 {@link #isFixed}</b>：本方法只回答"给我这表的行"，
+     * 而"这表算不算固定表"的裁决分两层——有计划时看 {@code plan.builder == fixed}
+     * （{@code ContentGen} / {@code PkGen} 都查这条），无计划时才回落本类的名字硬编码。
+     * 把 category 写进 {@code isFixed} 会让"无计划 fallback"这条通用路径也强制走固定表，
+     * 破坏该路径上"语义列走 LLM"的既有行为（实测直接打挂 ExpansionSmokeTest / PipelineSmokeTest）。</p>
+     */
     public static List<Map<String, Object>> rows(String tableName, List<ColumnDef> columns, Random rng) {
         if ("role".equals(tableName)) return roleRows(columns, rng);
         if ("admin".equals(tableName)) return adminRows(columns, rng);
+        if (CategoryTree.isCategory(tableName)) return CategoryTree.rows(columns, rng);
         return List.of();
     }
 

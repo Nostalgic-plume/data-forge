@@ -668,6 +668,11 @@ public final class ContentGen {
                 return bucketedFill(table, llmCols, rows, fkCol, idToName(grand), grand, toGrand);
             }
         }
+        // 有父表却没分组：语义列会退化成"整表一段 prompt"，内容与父类的对应关系随之变弱。
+        // 这条静默降级最坑——数据看着正常，只是商品和分类对不上，事后无从察觉，故必须留痕。
+        log.warn("表 `{}` 的语义列未按父表 `{}` 分组：父表行数×10 > 本表 {} 行。"
+                        + "本次将整表一次性生成，不携带父类上下文；如需按父类生成请调大本表行数",
+                table.name(), parent, rows.size());
         return fillRowsWithGapFill(table, llmCols, rows.size(), null);
     }
 
